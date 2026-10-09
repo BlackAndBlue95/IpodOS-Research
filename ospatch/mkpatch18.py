@@ -25,6 +25,7 @@ ap.add_argument('--e', required=True)
 ap.add_argument('--syms', required=True)
 ap.add_argument('--out', required=True)
 ap.add_argument('--hooks', choices=('libload', 'all'), default='all')
+ap.add_argument('--prof', action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
 ap.add_argument('--governor-floor', action='store_true',
                 help='with the backlight on, the OS governor floors at L1 (108 MHz) instead of pinning L0')
 a = ap.parse_args()
@@ -38,6 +39,7 @@ for l in open(a.syms):
     p = l.split()
     if len(p) == 3: sym[p[2]] = int(p[0], 16)
 E_END = E_BASE + len(e)
+if a.prof: E_RESERVE = 0xc0000                   # profiler builds: trampolines and counters need more room
 assert len(e) <= E_RESERVE, 'region E is %d bytes, more than the %d reserved' % (len(e), E_RESERVE)
 assert sym['__e_start'] == E_BASE
 
@@ -176,6 +178,25 @@ if a.hooks == 'all':
     entry_hook(0x08143c04, 0xe92d41f0, 0xe24dde42, sym['hk_lcdinit'])   # LCD init: captures the LCD driver
     entry_hook(0x08113470, 0xe92d4070, 0xe24dd038, sym['hk_render'])   # UI render pass: deferred theme walk
     entry_hook(0x081a8444, 0xe92d4ff7, 0xe24dd038, sym['hk_marq'])     # marquee draw
+    entry_hook(0x082d75c8, 0xe92d40f8, 0xe3a05000, sym['hk_fatfree'])  # FAT free count: seeded from FSInfo instead of a full FAT scan
+    entry_hook(0x082d61c0, 0xe92d40f8, 0xe1a06000, sym['hk_fatsearch'])  # free-cluster search: raw FAT reads for long ranges
+    entry_hook(0x082d6080, 0xe92d4fff, 0xe24dd00c, sym['hk_fatrun'])     # free-run search: starts at the first cluster free on disk
+    entry_hook(0x082d6618, 0xe92d40f8, 0xe1a05000, sym['hk_fatinfo'])    # FSInfo write: cached free count seeded first
+    # I2C bus 0 at interrupt setup: Apple's full reset (0x08360b94), not the light init that keeps
+    # the bootloader's state (interrupt off, ECLK); otherwise each PMU transfer times out at 100 ms
+    wr(0x0804d4d0, 0xeb0c4daf, 0xeb0c4cf3)
+    if 'hk_tpost' in sym:   # profiler builds: log the boot's software timers
+        wr(0x0808487c, 0xeb000000 | (((sym['hk_tpost'] - 0x0808487c - 8) >> 2) & 0xffffff), 0xeb018688)
+        wr(0x0808485c, 0xeb000000 | (((sym['hk_tcb'] - 0x0808485c - 8) >> 2) & 0xffffff), 0xe12fff31)
+        wr(0x0802cfb4, sym['hk_ksleep'], 0x22003d44)   # kernel veneers: sleep, event wait (timed)
+        wr(0x0802cfcc, sym['hk_kwait'], 0x220043c0)
+        wr(0x0802cfd4, sym['hk_ksemw'], 0x22004368)
+        wr(0x0802cfac, sym['hk_kpost'], 0x22001cbc)
+        wr(0x0802cfbc, sym['hk_ksig'], 0x220043f4)
+        wr(0x0802cfc4, sym['hk_ksig2'], 0x22004260)
+        entry_hook(0x0826deec, 0xe92d41f0, 0xe28d8018, sym['hk_fopen'])   # file opens, logged
+        wr(IRAM_BASE + 0x3080, 0xe51ff004, 0xe24ee004)   # IRQ entry: ldr pc, [pc, #-4] to the PC sampler
+        wr(IRAM_BASE + 0x3084, sym['hk_irqs'], 0xe50de00c)
     wr(0x081a7e70, 0xeb000000 | (((sym['e_marq_ink'] - 0x081a7e70 - 8) >> 2) & 0xffffff), 0xeb0000ec)   # scroll mask text ink: black
 
 

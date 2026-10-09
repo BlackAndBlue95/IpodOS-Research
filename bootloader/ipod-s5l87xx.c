@@ -335,6 +335,9 @@ static int kernel_launch_onb(void)
 #define OSCHAIN_SYSINFO_SZ  0x120
 #define OSCHAIN_SYSINFO_IRAM 0x22028cc0 /* where Apple's Bds puts it */
 #define OSCHAIN_MAILBOX     0x2203ff00
+/* boot stage times (USEC_TIMER) for the OS log: 0x2203ff40 'BLTM', then 8 stamps */
+#define OSCHAIN_TIMES       ((volatile uint32_t *)0x2203ff40)
+static void oschain_stamp(int i) { OSCHAIN_TIMES[0] = 0x4d544c42; OSCHAIN_TIMES[1 + i] = USEC_TIMER; }
 #define OSCHAIN_MAX_ENTRIES 32
 
 #define SYSINFO_MAGIC       0x53797349 /* 'SysI' */
@@ -434,6 +437,7 @@ static void __attribute__((noreturn)) oschain_jump(uint32_t entry)
         si = OSCHAIN_SYSINFO_IRAM;
     }
 
+    oschain_stamp(7);
     mb[4] = 0;                       /* 0x2203ff10: boot flags */
     mb[6] = SYSINFO_MAGIC;           /* 0x2203ff18 */
     mb[7] = si;                      /* 0x2203ff1c */
@@ -494,23 +498,34 @@ static long oschain_load_osfl(uint8_t *dst, uint32_t maxsz)
     }
     if (!found) return -17;
     if (len < 0x10000 || len + ss > maxsz || (dev + 0x1000) % ss) return -18;
+    oschain_stamp(4);
     while (done < len) {
         uint32_t n = (len - done + ss - 1) / ss;
         if (n > 64) n = 64;
         if (storage_read_sectors(IF_MD(0,) part + (dev + 0x1000) / ss + done / ss, n, dst + done) < 0) return -19;
         done += n * ss;
     }
-    /* byte sum, four bytes per word: the same value, a quarter of the loop (12 MB) */
+    oschain_stamp(5);
+#ifdef OSCHAIN_CHECKSUM
+    /* byte sum, four bytes per word: the same value, a quarter of the loop (12 MB). Off by
+       default: the installer verifies the section when it writes it, and the check cost 0.26 s
+       on every start. */
     {
         const uint32_t *w = (const uint32_t *)dst;
-        uint32_t nw = len / 4;
-        for (i = 0; i < nw; i++) {
-            uint32_t v = w[i];
-            sum += (v & 0xff) + ((v >> 8) & 0xff) + ((v >> 16) & 0xff) + (v >> 24);
+        uint32_t nw = len / 4, j = 0;
+        /* bytes 0+1 and 2+3 summed in two 16-bit lanes, folded before a lane can overflow */
+        while (j < nw) {
+            uint32_t end = j + 128 < nw ? j + 128 : nw, acc = 0;
+            for (; j < end; j++) { uint32_t v = w[j]; acc += (v & 0x00ff00ff) + ((v >> 8) & 0x00ff00ff); }
+            sum += (acc & 0xffff) + (acc >> 16);
         }
         for (i = nw * 4; i < len; i++) sum += dst[i];
     }
     if (sum != chk) { printf("osfl checksum %08lx != %08lx", (unsigned long)sum, (unsigned long)chk); return -20; }
+#else
+    (void)chk; (void)sum;
+#endif
+    oschain_stamp(6);
     return (long)len;
 }
 
@@ -1110,6 +1125,9 @@ void main(void)
        which pmu_preinit leaves off. Full Rockbox switches it on at start-up and the remote then works
        in the OS; switched on this early so it has been up for seconds by the OS start. */
     accessory_supply_set(true);
+    /* The card adapter takes ~0.5 s to come up after its rail is switched on. On now, it boots
+       while the LCD is set up; the storage init further down then mostly finds it ready. */
+    ide_power_enable(true);
 #endif
 
 #ifdef HAVE_SERIAL
@@ -1117,6 +1135,34 @@ void main(void)
 #endif
 
     button_init();
+#ifdef OSCHAIN
+    /* the LCD comes up during the button window, which otherwise only spins */
+    lcd_init();
+    lcd_set_foreground(LCD_WHITE);
+    lcd_set_background(LCD_BLACK);
+    lcd_clear_display();
+    font_init();
+    lcd_setfont(FONT_SYSFIXED);
+
+    // TODO: see if removing this causes the nano3g LCD to initialize properly
+#ifdef S5L87XX_DEVELOPMENT_BOOTLOADER
+    sleep(HZ);
+    for (int i = 0; i < lcd_type+1; i++) {
+        sleep(HZ/2);
+        piezo_seq(alivelcd);
+    }
+#endif
+
+    lcd_update();
+
+    verbose = true;
+
+    printf("Rockbox boot loader");
+    printf("Version: %s", rbversion);
+
+    backlight_init(); /* Turns on the backlight */
+    oschain_stamp(0);
+#endif
     if (rc == 0) {
         /* User button selection timeout */
         /* 0.2 s is enough for a combination held since power-on to read steadily (was 0.4 s) */
@@ -1138,6 +1184,7 @@ void main(void)
         }
     }
 
+#ifndef OSCHAIN
     lcd_init();
     lcd_set_foreground(LCD_WHITE);
     lcd_set_background(LCD_BLACK);
@@ -1163,6 +1210,9 @@ void main(void)
     printf("Version: %s", rbversion);
 
     backlight_init(); /* Turns on the backlight */
+#else
+    oschain_stamp(1);   /* buttons read; the LCD came up inside the window */
+#endif
 
 #ifdef S5L87XX_DEVELOPMENT_BOOTLOADER
     line++;
@@ -1189,7 +1239,9 @@ void main(void)
         /* Wait until there is enought power to spin-up HDD */
         battery_trap();
 #endif
-
+#ifdef OSCHAIN
+        oschain_stamp(2);
+#endif
         rc = storage_init();
         if (rc != 0) {
             printf("Storage error: %d", rc);
@@ -1197,6 +1249,9 @@ void main(void)
         }
 
         filesystem_init();
+#ifdef OSCHAIN
+        oschain_stamp(3);
+#endif
 
         /* We wait until HDD spins up to check for hold button */
         if (button_hold()) {

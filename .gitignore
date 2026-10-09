@@ -37,3 +37,5 @@ __pycache__/
 
 # local tool settings
 .claude/settings.local.json
+runtime/prof_tramp.S
+runtime/prof_hooks.json

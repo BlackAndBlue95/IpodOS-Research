@@ -37,9 +37,14 @@ const struct sync_album *sync_albums(int *n);        /* the last scan's album fo
 
 /* fatdir.c: folder listings read straight from the FAT32 volume */
 int fatdir_begin(void);                              /* opens the block device, reads the BPB; 0 ok */
-void fatdir_end(void);
+void fatdir_end(void);                               /* the device stays open */
+void fatdir_release(void);                           /* closes the device: after the boot's last raw read */
 int fatdir_list(const char *path, int (*cb)(void *ctx, const char *name, int is_dir, uint32_t size, uint16_t date, uint16_t time), void *ctx);
 extern int fatdir_reads;
+uint32_t fatdir_free_clusters(uint32_t *nclus);      /* FSInfo free clusters, 0 if unusable; *nclus = clusters on the volume */
+extern int fatdir_free_why;
+uint32_t fatdir_next_free(uint32_t start, uint32_t end, int (*confirm)(void *, uint32_t), void *ctx, int *reads);
+uint32_t fatdir_nclus(void);
 
 /* log.c: boot timeline */
 void log_t(int slot);                                /* TIMER_E now into slot 0..11 */

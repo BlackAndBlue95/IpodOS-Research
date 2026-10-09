@@ -1,0 +1,20 @@
+--- a/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c
++++ b/firmware/target/arm/s5l8702/ipod6g/storage_ata-6g.c
+@@ -710,9 +710,17 @@
+         ATA_SWRST = BIT(0);
+         sleep(HZ / 100);
+         ATA_SWRST = 0;
++#if defined(BOOTLOADER) && defined(OSCHAIN)
++        /* flash behind the adapter: the PIO-ready and IDENTIFY busy waits below cover readiness,
++           the spin-up settle times are not needed (OS chain bootloader only) */
++        sleep(HZ / 50);
++        ATA_CONTROL = BIT(0);
++        sleep(HZ / 50);
++#else
+         sleep(HZ / 10);
+         ATA_CONTROL = BIT(0);
+         sleep(HZ / 5);
++#endif
+         ATA_PIO_TIME = 0x191f7;
+         ATA_PIO_LHR = 0;
+         ATA_CFG = BIT(6);

@@ -108,9 +108,13 @@ int fatdir_begin(void)
 #ifdef FATDIR_HOST
     V.ss = h_ss;
 #else
-    if (!dev && !(dev = fd_malloc(sizeof *dev))) return -1;
-    dev_ctor(dev, 0, 0);
-    dev_open(dev);                   /* not a status (update.c ignores it too); the MBR read checks the device */
+    /* The device stays open between sessions until fatdir_release: closing it lets the storage
+       driver power the card down, and the OS's next read then waits ~600 ms for it to come back. */
+    if (!dev) {
+        if (!(dev = fd_malloc(sizeof *dev))) return -1;
+        dev_ctor(dev, 0, 0);
+        dev_open(dev);               /* not a status (update.c ignores it too); the MBR read checks the device */
+    }
     dev_ss = dev_ssize(dev);
     if (dev_ss != 512 && dev_ss != 4096) { dev_close(dev); fd_free(dev); dev = 0; return -1; }
     V.ss = dev_ss;
@@ -142,15 +146,76 @@ int fatdir_begin(void)
     V.ok = 1;
     return 0;
 }
+/* free space from the FSInfo sector (kept current by macOS on unmount), in KB; 0 if unusable */
+/* first free cluster in [start, end) from FAT 1 on the disk, 16 sectors per read; a candidate
+   counts only when confirm() agrees (the FAT driver's cache can hold allocations not yet written).
+   0: none in the range, 0xffffffff: not answered (the caller searches its own way) */
+uint32_t fatdir_next_free(uint32_t start, uint32_t end, int (*confirm)(void *, uint32_t), void *ctx, int *reads)
+{
+    uint8_t *b;
+    uint32_t per, c, sec, n, first, i;
+    if (!V.ok) return 0xffffffffu;
+    per = V.ss / 4;
+    if (end > V.nclus + 2) end = V.nclus + 2;
+    if (start < 2) start = 2;
+    if (!(b = amalloc(16 * V.ss))) return 0xffffffffu;
+    for (c = start; c < end; c = first + n * per) {
+        sec = c / per;
+        n = sec + 16 <= V.fatsz ? 16 : V.fatsz - sec;
+        if (!n || dev_read(V.part + V.reserved + sec, b, n)) { afree(b); return 0xffffffffu; }
+        (*reads)++;
+        first = sec * per;
+        for (i = c - first; i < n * per && first + i < end; i++)
+            if (!(g32(b + 4 * i) & 0x0fffffff) && confirm(ctx, first + i)) { afree(b); return first + i; }
+    }
+    afree(b);
+    return 0;
+}
+uint32_t fatdir_nclus(void) { return V.ok ? V.nclus : 0; }
+
+uint32_t fatdir_fsinfo_next;        /* FSInfo next-free hint from the last read */
+int fatdir_free_why;                 /* why the last fatdir_free_clusters gave 0: 1 state, 2 memory, 3 boot read, 4 FSInfo sector, 5 signatures, 6 count */
+uint32_t fatdir_free_clusters(uint32_t *nclus)
+{
+    uint8_t *b, *bs;
+    uint32_t sec, free = 0, n = 0;
+    fatdir_free_why = 1;
+    *nclus = V.nclus;
+    if (!V.ok) return 0;
+    fatdir_free_why = 2;
+    if (!(bs = amalloc(V.ss))) return 0;
+    if (!(b = amalloc(V.ss))) { afree(bs); return 0; }
+    fatdir_free_why = 3;
+    if (!dev_read(V.part, bs, 1)) {
+        sec = g16(bs + 48);
+        fatdir_free_why = 4;
+        if (sec && sec < V.reserved && !dev_read(V.part + sec, b, 1)) {
+            fatdir_free_why = 5;
+            if (g32(b) == 0x41615252 && g32(b + 484) == 0x61417272 && g32(b + 508) == 0xaa550000) {
+                free = g32(b + 488);
+                fatdir_fsinfo_next = g32(b + 492);
+                fatdir_free_why = 6;
+                if (free && free != 0xffffffffu && free <= V.nclus) { n = free; fatdir_free_why = 0; }
+            }
+        }
+    }
+    afree(b); afree(bs);
+    return n;
+}
+
 void fatdir_end(void)
 {
     int i;
     drop_caches();
     for (i = 0; i < 4; i++) if (fatc[i]) { afree(fatc[i]); fatc[i] = 0; }
+    V.ok = 0;
+}
+
+void fatdir_release(void)
+{
 #ifndef FATDIR_HOST
     if (dev) { dev_close(dev); fd_free(dev); dev = 0; }
 #endif
-    V.ok = 0;
 }
 
 static uint32_t next_cluster(uint32_t c)

@@ -206,6 +206,10 @@ void settings_early(void)
     log_state(file_loaded ? "ui init, from the file:" : "ui init, from the image:", boot_mode, mode);
     log_t(7);
     log_s("   t: ui init at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
+#ifdef PROF
+    { void prof_mark(const char *); void prof_stop(int); void fat_state_log(const char *); fat_state_log("at ui init"); prof_mark("ui init"); prof_stop(1); }
+#endif
+    fatdir_release();                  /* the library load's raw reads are done */
     if (file_loaded) log_flush();
 }
 

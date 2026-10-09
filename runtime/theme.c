@@ -416,7 +416,15 @@ static void __attribute__((used)) uiinit_c(uint32_t *r)
     done = 1;
     settings_early();
 }
-static void __attribute__((used)) lcdinit_c(uint32_t *r) { void power_resume_check(void); theme_lcd = (void *)r[0]; power_resume_check(); }
+static void __attribute__((used)) lcdinit_c(uint32_t *r)
+{
+    void power_resume_check(void);
+#ifdef PROF
+    { void prof_mark(const char *); prof_mark("lcd init"); }
+#endif
+    theme_lcd = (void *)r[0];
+    power_resume_check();
+}
 __attribute__((naked, section(".text.entry"), used)) void hk_uiinit(void)
 {
     __asm__ volatile(
@@ -426,7 +434,27 @@ __attribute__((naked, section(".text.entry"), used)) void hk_uiinit(void)
         "1: .word uiinit_c\n 2: .word 0x081135a4\n");
 }
 void settings_boot(int final);
-static void __attribute__((used)) appinit_c(uint32_t *r) { (void)r; log_t(0); settings_boot(0); }
+static void __attribute__((used)) appinit_c(uint32_t *r)
+{
+    (void)r;
+#ifdef PROF
+    { void prof_start(void); prof_start(); }
+#endif
+    log_t(0);
+    {   /* the bootloader's stage times (its own clock; the OS restarts the timer) */
+        volatile uint32_t *bt = (volatile uint32_t *)0x2203ff40;
+        if (bt[0] == 0x4d544c42) {
+            static const char *const nm[] = { "lcd+battery ", "storage init ", "find osfl ", "read ", "checksum ", "sysinfo ", "drive sleep " };
+            int k;
+            log_s("   bootloader (ms): start "); log_d((int)(bt[1] / 1000)); log_s(", ");
+            for (k = 0; k < 7; k++) { log_s(nm[k]); log_d((int)((bt[2 + k] - bt[1 + k]) / 1000)); log_s(k < 6 ? ", " : ""); }
+            log_s(", total "); log_d((int)(bt[8] / 1000)); log_s(" ms on its clock\n");
+            bt[0] = 0;
+        }
+    }
+    /* no settings read here: the card is not up yet and the open would block this task ~1.5 s;
+       the library load reads it before the UI is built */
+}
 __attribute__((naked, section(".text.entry"), used)) void hk_appinit(void)
 {
     __asm__ volatile(
@@ -681,6 +709,7 @@ static int first_render_logged;
 static void __attribute__((used)) render_c(uint32_t *r)
 {
     uint8_t *root;
+    { void libload_first_frame(void); libload_first_frame(); }
     if (theme_walk_pending != 2) return;
     theme_walk_pending = 0;
     /* the render pass draws layers: screen+0xe8 is a list whose array (+0x80, count +0x84) holds

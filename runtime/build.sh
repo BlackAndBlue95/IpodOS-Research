@@ -5,7 +5,10 @@ T=${ARM_TOOLCHAIN:-$(cd .. && pwd)/build/arm-gnu-toolchain-13.3.rel1-darwin-arm6
 SRC="libload.c log.c osfile.c update.c artdb.c fatdir.c path.c power.c theme.c theme_rules.c settings.c sun.c ossync.c
      flac/flacblob.c flac/cover.c flac/tjpgd.c flac/rbjpeg.c flac/rbflac.c flac/rbflac_arm.S
      flac/rbfir.c flac/rbfir_arm.S"
-$T/arm-none-eabi-gcc -O2 -Wall -Wno-unused-function -Wno-misleading-indentation \
+# PROF=1: the library-load profiler (tools/gen_prof.py writes prof_tramp.S)
+DEFS=""
+[ -n "$PROF" ] && { SRC="$SRC prof.c prof_tramp.S"; DEFS="-DPROF"; }
+$T/arm-none-eabi-gcc $DEFS -O2 -Wall -Wno-unused-function -Wno-misleading-indentation \
     -marm -mcpu=arm926ej-s -ffreestanding -nostdlib -fno-builtin -fno-common \
     -ffunction-sections -fdata-sections -I. -Iflac -I../libsync \
     -Wl,--gc-sections -Wl,--no-warn-rwx-segments -T e.ld $SRC -lgcc -o e.elf || exit 1
