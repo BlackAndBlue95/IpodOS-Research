@@ -15,6 +15,21 @@ Apple's iPod Classic 7G firmware 2.0.4, extended with C code linked into the ima
 How it works, address by address: [docs/CODEBASE.md](docs/CODEBASE.md).
 Every byte changed in Apple's image: [ospatch/HOOKS.md](ospatch/HOOKS.md).
 
+## Screenshots
+
+The Modern style: flat bars, large accent icons, SF Compact text. Dark with five of the eight
+accent colours, and Light (bottom right):
+
+![The main menu in five accent colours and Light](docs/screenshots/accents.png)
+
+Around the menus: Extras, Settings, a song list, Search and the hold screen while music plays:
+
+![Extras, Settings, Songs, Search and the hold screen](docs/screenshots/tour.png)
+
+Single screens at twice the iPod's resolution are in [docs/screenshots](docs/screenshots). They
+are taken in the QEMU model (tools/qemu); the model does not draw Now Playing's text, so that
+screen is not shown.
+
 ## Layout
 - `runtime/` the code linked into the OS ("region E"); `runtime/flac/` playback and art;
   `runtime/host/` Mac-side generators and checks

@@ -115,7 +115,8 @@ COLR_KEEP_PREFIX = ('NowPlaying_Text', 'NowPlaying_StatusBar', 'NowPlaying_Backg
 BMAP_PREFIX = ('StatusBarWhite_', 'System_Scrollbar', 'System_ActiveButton', 'System_NormalButton',
                'Background_LightBlue', 'OptionBar_White_', 'Settings_MainMenu', 'DateTimePicker_',
                'Media_Genius_Selected', 'GeniusMixes_Background',
-               'NowPlaying_ProgressBar_', 'NowPlaying_ProgressFill_', 'NowPlaying_White_')
+               'NowPlaying_ProgressBar_', 'NowPlaying_ProgressFill_', 'NowPlaying_White_',
+               'NowPlaying_Idle_')   # the hold screen's opaque white tiles: inverted in Dark
 
 
 def selection_bar(w, h, top, bottom):

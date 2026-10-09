@@ -26,7 +26,7 @@ static const uint32_t *blk_jpeg(const uint32_t *blk) { return blk[0] == ARTMAGIC
 int dir_list(const char *dir, int (*cb)(void *ctx, const char *name, int is_dir, uint32_t size, uint16_t date, uint16_t time), void *ctx);
 int file_write(const char *path, const void *data, uint32_t n);
 void boost_hold(uint32_t ms);
-void log_s(const char *s); void log_d(int v); void log_c(char c); void log_name(const char *s);
+void log_x(uint32_t v, int digits); void log_s(const char *s); void log_d(int v); void log_c(char c); void log_name(const char *s);
 /* the jpeg's offset and length in the file named by cov: the two words before the path,
  * or the whole file (ARTMAGIC) */
 static void cov_span(const char *cov, uint32_t *off, uint32_t *len)
@@ -368,6 +368,13 @@ HOOK(hk_seek, seek_c, 0xe92d43f8, 0x0826d8e4)
 HOOK(hk_read, read_c, 0xe92d47f0, 0x0826d600)
 HOOK(hk_parse, parse_c, 0xe92d43f0, 0x0828a5b0)   /* WAV parser: .flac becomes our reader */
 
+/* One artwork image per album: tracks of the same album get the image made for the first one
+   while the OS still has it (looked up by its id, img+12), so the OS sees the same art and keeps
+   what it has drawn instead of fetching the cover again for every track. */
+#define NALBIMG 64
+static struct { const uint32_t *blk; uint32_t id; } albimg[NALBIMG];
+static int nalbimg, albimg_next;
+static uint32_t albimg_reused;
 static void *art_find(void *lib, uint8_t *track)
 {
     void *r = os_art_find(lib, track);
@@ -383,11 +390,26 @@ static void *art_find(void *lib, uint8_t *track)
     TR(50)++;
     for (d = n; d > 0 && path[d - 1] != '\\'; d--);
     { Cov *c = find_cover(path, d); blk = c ? (c->nat ? c->nat : c->blk) : 0;
-      if (art_log < 16) { art_log++; log_s("   art: find "); log_name(path); log_s(c ? (blk == (uint32_t *)c->nat && c->nat ? " -> covers.db\n" : (blk ? " -> jpeg\n" : " -> no cover\n")) : " -> no album\n"); } }
+      if (art_log < 16) { art_log++; log_s("   art: find "); log_name(path);
+#ifdef ART_IDS
+        log_s(" id "); log_x(*(uint32_t *)(track + 0x110), 8); log_c(' '); log_x(*(uint32_t *)(track + 0x114), 8);
+#endif
+        log_s(c ? (blk == (uint32_t *)c->nat && c->nat ? " -> covers.db\n" : (blk ? " -> jpeg\n" : " -> no cover\n")) : " -> no album\n"); } }
     if (!blk) { TR(54)++; return 0; }
     (void)cov; (void)cl;
+    for (i = 0; i < nalbimg; i++)
+        if (albimg[i].blk == blk) {
+            uint8_t *im = os_img_by_id(lib, albimg[i].id);
+            if (im && is_ours_img(im)) { albimg_reused++; TR(54) += 0x10000; if (art_log < 16) log_s("   art: same album, image kept\n"); return im; }
+            break;
+        }
     img = os_img_new(lib, 0);
     if (!img) return 0;
+    if (i < nalbimg) albimg[i].id = *(uint32_t *)(img + 12);
+    else {
+        int k = nalbimg < NALBIMG ? nalbimg++ : (albimg_next++ % NALBIMG);
+        albimg[k].blk = blk; albimg[k].id = *(uint32_t *)(img + 12);
+    }
     *(uint32_t *)(img + 16) = *(uint32_t *)(track + 0x110);
     *(uint32_t *)(img + 20) = *(uint32_t *)(track + 0x114);
     for (i = 0; i < 4; i++) {

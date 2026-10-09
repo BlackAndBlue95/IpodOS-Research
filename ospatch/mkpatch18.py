@@ -46,6 +46,7 @@ for l in open(a.syms):
     if len(p) == 3: sym[p[2]] = int(p[0], 16)
 E_END = E_BASE + len(e)
 if a.prof: E_RESERVE = 0xc0000                   # profiler builds: trampolines and counters need more room
+if len(e) > E_RESERVE: E_RESERVE = (len(e) + 0x3ffff) & ~0x3ffff   # Modern icons (sficons_data.h, both versions in the image): the heap starts later
 assert len(e) <= E_RESERVE, 'region E is %d bytes, more than the %d reserved' % (len(e), E_RESERVE)
 assert sym['__e_start'] == E_BASE
 
@@ -111,6 +112,9 @@ if a.hooks == 'all':
     for at in (0x082d6314, 0x082d9b14): retarget(at, 0x082d95dc, sym['e_lfn_batch'])   # FAT long names across sectors
     for at in (0x08163a6c, 0x08137dc0): retarget(at, 0x082c5f14, sym['e_art_clear'])   # white clear: album view, main menu art pane
     wr(0x08270980, 0xeb000000 | (((sym['e_refl_gate'] - 0x08270980 - 8) >> 2) & 0xffffff), 0xe5940094)   # cover reflection load -> e_refl_gate, 0 in Modern style
+    wr(0x08270728, 0x1b000000 | (((sym['e_cover_angle'] - 0x08270728 - 8) >> 2) & 0xffffff), 0x15901004)   # cover angle: Now Playing flat in Modern style
+    if 'e_font_dir' in sym:   # fonts folder: FLAC\Fonts on the music volume in Modern style (theme.c)
+        wr(0x080692f8, 0xea000000 | (((sym['e_font_dir'] - 0x080692f8 - 8) >> 2) & 0xffffff), 0xe3500001)
     wr(0x08261ef4, 0xeb000000 | (((sym['e_hl_bottom_r'] - 0x08261ef4 - 8) >> 2) & 0xffffff), 0xe5cd6118)   # selection bar bottom row: store the accent's red
     wr(0x08261f24, 0xeb000000 | (((sym['e_hl_edge_r'] - 0x08261f24 - 8) >> 2) & 0xffffff), 0xe5cd6110)     # selection bar edge: store the accent's red
     wr(0x08142140, 0xe3a02000, 0xe3a02001)                     # USB mass storage: parse_mbr 0, so the data view starts at LBA 0 (whole disk)

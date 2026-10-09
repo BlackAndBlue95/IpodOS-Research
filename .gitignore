@@ -39,3 +39,7 @@ __pycache__/
 .claude/settings.local.json
 runtime/prof_tramp.S
 runtime/prof_hooks.json
+
+# Apple SF Symbols renders (personal use only): never commit
+sficons/
+runtime/sficons_data.h

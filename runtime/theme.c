@@ -801,6 +801,147 @@ __attribute__((naked, section(".text.entry"), used)) void hk_marq(void)
         ".word 0xe92d4ff7\n ldr pc, 2f\n"
         "1: .word marq_c\n 2: .word 0x081a8448\n");
 }
+/* ---- Modern style icons: Apple SF Symbols rendered on the Mac (tools/sf/gen_sficons.py), each in
+   its original's format and size. The image carries both versions: Modern points the package index
+   entries at the new ones (sf_raw, in region E), Classic at the originals, so either costs a few
+   hundred word writes. The theme then takes its pristine copies from whichever is current, so
+   Dark/accent recolour them as usual. The accent tiles (base blue + white symbol) are mixed toward
+   the accent from their pristine palettes. The generated header is personal-use data that is never
+   committed; without it this does nothing. ---- */
+#if __has_include("sficons_data.h")
+#include "sficons_data.h"
+static uint32_t sf_orig_off[SF_N];
+static uint8_t *sf_pal[SF_NACCENT];
+static uint32_t *pkg_slot(uint32_t type, uint32_t id)
+{
+    uint32_t nt = PKG[2], i, k;
+    for (i = 0; i < nt; i++) {
+        const uint32_t *t = PKG + 3 + 4 * i;
+        if (t[0] != type) continue;
+        uint32_t *ix = (uint32_t *)((const uint8_t *)PKG + t[3]);
+        for (k = 0; k < t[1]; k++) if (ix[3 * k] == id) return ix + 3 * k;
+        return 0;
+    }
+    return 0;
+}
+static void sf_apply(const uint8_t *acc, int modern)
+{
+    uint32_t i, j, m, t0 = TIMER_E;
+    int ok = 0, bad = 0;
+    for (i = 0; i < SF_N; i++) {
+        uint32_t *e = pkg_slot(T_BMAP, sf_tab[i][0]);
+        if (!e || (e[2] != sf_tab[i][3] && e[2] != sf_tab[i][1])) { bad++; continue; }
+        if (!sf_orig_off[i]) sf_orig_off[i] = e[1] + 1;          /* +1: 0 means not saved yet */
+        e[1] = modern ? (uint32_t)(sf_raw + sf_tab[i][2]) - PKG_DATA : sf_orig_off[i] - 1;
+        e[2] = modern ? sf_tab[i][1] : sf_tab[i][3];              /* a recoded image has its own size */
+        ok++;
+    }
+    for (j = 0; modern && j < SF_NACCENT; j++) {
+        uint8_t *o = 0, *pal;
+        uint32_t n = 0, np;
+        for (i = 0; i < SF_N; i++) if (sf_tab[i][0] == sf_accent[j]) { o = sf_raw + sf_tab[i][2]; n = sf_tab[i][1]; }
+        if (!o || (o[0] != 0x64 && o[0] != 0x65)) continue;
+        np = rd32(o + 0x1c);
+        if (0x20 + 4 * np > n) continue;
+        if (!sf_pal[j] && (sf_pal[j] = os_malloc(4 * np))) memcpy(sf_pal[j], o + 0x20, 4 * np);
+        if (!(pal = sf_pal[j]) || !acc) continue;
+        /* base blue (0,122,255) mixed with white: t = how blue; the mix moves to the accent */
+        for (m = 0; m < np; m++) {
+            const uint8_t *p = pal + 4 * m;
+            uint8_t *d = o + 0x20 + 4 * m;
+            uint32_t t = 255 - p[2], c;
+            if (!p[3]) continue;
+            for (c = 0; c < 3; c++) d[2 - c] = 255 - ((255 - acc[c]) * t + 127) / 255;
+        }
+    }
+    log_s("   theme: SF icons "); log_s(modern ? "on " : "off "); log_d(ok); log_s(", failed "); log_d(bad);
+    log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");
+}
+#else
+static void sf_apply(const uint8_t *acc, int modern) { (void)acc; (void)modern; }
+#endif
+
+/* List row separators: 1-pixel views whose colour is copied from 9 static templates in the OS
+   data (#DEDEDE, light grey). Dark mode gave white lines between two-line rows; they take the iOS
+   dark separator there. Only a template still holding one of the two values is touched. */
+static const uint32_t sep_tmpl[9] = { 0x08901ccc, 0x08902000, 0x08902334, 0x08902600, 0x08902934,
+                                      0x08902c00, 0x08902ecc, 0x08903268, 0x08903534 };
+#define SEP_LIGHT 0xffdededeu
+#define SEP_DARK  0xff38383au
+static void theme_separators(int mode)
+{
+    uint32_t i;
+    for (i = 0; i < 9; i++) {
+        volatile uint32_t *w = (volatile uint32_t *)sep_tmpl[i];
+        if (*w == SEP_LIGHT || *w == SEP_DARK) *w = mode ? SEP_DARK : SEP_LIGHT;
+    }
+}
+
+/* ---- Modern style: the remaining glossy bars go flat, in place (each fill is the same on every
+   apply, so no pristine copy is needed; a style change restarts). The black status bar (About,
+   USB, Now Playing) keeps light text, so it takes the dark page colour in Dark and near-black in
+   Light; the About band a grey; capacity and progress bar pieces their own average colour. ---- */
+static const uint32_t modern_dark_bar[2] = { 0x0dad00f8, 0x0dad082e };   /* StatusBarBlack_Background, NowPlaying_StatusBar */
+static const uint32_t modern_mean[37] = {
+    0x0dad0abc, 0x0dad0abb, 0x0dad0abd, 0x0dad0ab7, 0x0dad0ab9, 0x0dad0ab8, 0x0dad0aba, 0x0dad0ac5,
+    0x0dad0ac4, 0x0dad0ac6, 0x0dad0ac2, 0x0dad0ac1, 0x0dad0ac3, 0x0dad0abf, 0x0dad0abe, 0x0dad0ac0,
+    0x0dad0ab2, 0x0dad0ab1, 0x0dad0ab3, 0x0dad0ab5, 0x0dad0ab4, 0x0dad0ab6,          /* CapacityView_* */
+    0x0dad0dcf, 0x0dad0dcd, 0x0dad0dce, 0x0dad0dd2, 0x0dad0dd0, 0x0dad0dd1,          /* DiskModeImage_Progress_* */
+    0x0dad0aad, 0x0dad0aab, 0x0dad0aaa, 0x0dad0ab0, 0x0dad0aaf, 0x0dad0aac, 0x0dad0aae,   /* Settings_About_Capacity_* */
+    0, 0 };
+static void bm_fill(uint8_t *d, uint32_t size, const uint8_t c[3])
+{
+    uint32_t fmt = d[0] | d[1] << 8, stride = d[4] | d[5] << 8, h = rd32(d + 0x10), w = rd32(d + 0x14), x, y;
+    if (fmt == 0x64 || fmt == 0x65) {
+        uint32_t n = rd32(d + 0x1c), i;
+        if (0x20 + 4 * n > size) return;
+        for (i = 0; i < n; i++) { uint8_t *p = d + 0x20 + 4 * i; if (p[3]) { p[2] = c[0]; p[1] = c[1]; p[0] = c[2]; } }
+    } else if (fmt == 0x1888) {
+        if (0x1c + stride * h > size) return;
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) { uint8_t *p = d + 0x1c + y * stride + 4 * x; if (p[3]) { p[2] = c[0]; p[1] = c[1]; p[0] = c[2]; } }
+    } else if (fmt == 0x565) {
+        uint32_t v = (c[0] >> 3) << 11 | (c[1] >> 2) << 5 | c[2] >> 3;
+        if (0x1c + stride * h > size) return;
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) { uint8_t *p = d + 0x1c + y * stride + 2 * x; p[0] = v; p[1] = v >> 8; }
+    }
+}
+static int bm_mean(const uint8_t *d, uint8_t c[3])
+{
+    uint32_t fmt = d[0] | d[1] << 8, stride = d[4] | d[5] << 8, h = rd32(d + 0x10), w = rd32(d + 0x14), x, y, n = 0, r = 0, g = 0, b = 0;
+    uint8_t px[4];
+    if (fmt != 0x64 && fmt != 0x65 && fmt != 0x1888 && fmt != 0x565) return 0;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++)
+        if (bm_px(d, fmt, stride, x, y, px) && px[3] >= 128) { r += px[0]; g += px[1]; b += px[2]; n++; }
+    if (!n) return 0;
+    c[0] = r / n; c[1] = g / n; c[2] = b / n;
+    return 1;
+}
+/* Search (and the volume/brightness overlays): the glossy black panel with a grey rim
+   (TVOut_Background_*, System_Overlay_*), the letter strip (OptionBar_Black_Well_*), the
+   selected-letter bubble (OptionBar_Black_Thumb_*, takes the accent) and the white edit field */
+static const uint32_t modern_panel[6] = { 0x0dad0141, 0x0dad0143, 0x0dad0142, 0x0dad087b, 0x0dad087d, 0x0dad087c };
+static const uint32_t modern_well[3]  = { 0x0dad0154, 0x0dad0153, 0x0dad0155 };
+static const uint32_t modern_thumb[3] = { 0x0dad0157, 0x0dad0156, 0x0dad0158 };
+static const uint32_t modern_field[3] = { 0x0dad0163, 0x0dad0165, 0x0dad0164 };
+static void modern_bars(int mode, const uint8_t *acc)
+{
+    static const uint8_t near_black[3] = { 28, 28, 30 }, band_dark[3] = { 44, 44, 46 }, band_light[3] = { 142, 142, 147 },
+                         well[3] = { 58, 58, 60 }, white[3] = { 255, 255, 255 };
+    uint32_t i, size;
+    uint8_t *d, c[3];
+    for (i = 0; i < 6; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, modern_panel[i], &size))) bm_fill(d, size, band_dark);
+    for (i = 0; i < 3; i++) {
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_well[i], &size))) bm_fill(d, size, well);
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_thumb[i], &size)) && acc) bm_fill(d, size, acc);
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_field[i], &size))) bm_fill(d, size, mode ? well : white);   /* typed text follows the theme */
+    }
+    for (i = 0; i < 2; i++)
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_dark_bar[i], &size))) bm_fill(d, size, mode ? theme_pal_white : near_black);
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad0aa9, &size))) bm_fill(d, size, mode ? band_dark : band_light);   /* Settings_About_Band */
+    for (i = 0; modern_mean[i]; i++)
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_mean[i], &size)) && bm_mean(d, c)) bm_fill(d, size, c);
+}
+
 /* ---- apply ---- */
 int theme_is_applied(int mode, int accent) { return applied_mode == mode && applied_accent == accent; }
 #define BMCACHE 160
@@ -819,6 +960,9 @@ int theme_apply(int mode, int accent, int rebuild_ui)
        themed. Computed after them, the first apply flattened them to the previous (white) value,
        and views built from those resources kept a white status bar and page */
     apply_code_colours(mode, accent);
+    sf_apply(acc, theme_style);
+    theme_separators(mode);
+    if (theme_style) modern_bars(mode, acc);
     for (i = 0; i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
         uint32_t id = cls == 0 ? theme_bmap_chrome[i] : cls == 1 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
@@ -852,6 +996,21 @@ int theme_apply(int mode, int accent, int rebuild_ui)
         }
         if (rsrc_write(T_COLR, theme_colr[i], &v, 4)) bad++; else done++;
     }
+    /* Modern: the preview images (white masks) are tinted with the accent: main menu and
+       empty-library previews (PreviewArea_ForegroundImageColor), Settings (Settings_Icon_Color).
+       Classic: stock, or the dark recolour the COLR loop above just wrote */
+    if (theme_style) {
+        static const uint32_t tint[2] = { 0x0dad009d, 0x0dad0b3e };
+        for (i = 0; i < 2; i++) {
+            const uint8_t *src = orig_of(T_COLR, tint[i], &size);
+            if (!src || size < 4) { bad++; continue; }
+            v = (rd32(src) & 0xff000000) | (uint32_t)acc[0] << 16 | acc[1] << 8 | acc[2];
+            if (rsrc_write(T_COLR, tint[i], &v, 4)) bad++; else done++;
+        }
+    } else {
+        const uint8_t *src = orig_of(T_COLR, 0x0dad009d, &size);
+        if (src && size >= 4) { v = rd32(src); if (rsrc_write(T_COLR, 0x0dad009d, &v, 4)) bad++; else done++; }
+    }
     theme_named(mode, accent, acc);
     applied_mode = mode; applied_accent = accent;
     log_s("   theme: "); log_s(mode ? "dark, accent " : "light"); if (mode) log_s(accent_names[accent]);
@@ -866,4 +1025,43 @@ void theme_accent_rgb(uint8_t out[3])
     extern int theme_accent;
     int a = theme_accent >= 0 && theme_accent < NACCENT ? theme_accent : 0;
     out[0] = accents[a][0]; out[1] = accents[a][1]; out[2] = accents[a][2];
+}
+
+/* Modern style: Now Playing's cover is drawn turned 171 degrees about its vertical axis (180,
+ * facing the viewer, less a 9 degree tilt); the cover render loads that angle at 0x08270728
+ * (`ldrne r1, [r0, #4]`, then 0x08272234 rotates by it). Modern snaps exactly 171.0 to 180.0, so
+ * the cover is flat; other angles (Cover Flow) are left alone. Flags are kept for the `addne`
+ * that follows. */
+__attribute__((naked, section(".text.entry"), used)) void e_cover_angle(void)
+{
+    __asm__ volatile(
+        "ldr r1, [r0, #4]\n"
+        "mrs ip, cpsr\n push {ip}\n"
+        "ldr ip, 1f\n ldr ip, [ip]\n cmp ip, #0\n"
+        "beq 9f\n"
+        "ldr ip, 2f\n cmp r1, ip\n ldreq r1, 3f\n"
+        "9: pop {ip}\n msr cpsr_f, ip\n"
+        "bx lr\n"
+        "1: .word theme_style\n 2: .word 0x00ab0000\n 3: .word 0x00b40000\n");
+}
+
+/* Modern style font: the OS asks 0x080692f8(kind, &volume, path) for its fonts folder (kind 1:
+ * volume 4, the firmware's resource volume, "Resources/Fonts"; it scans it, then opens fonts by
+ * name). In Modern, when FLAC\Fonts on the music volume (0) holds the set (SF Compact standing in
+ * for Helvetica, tools/sf/gen_font.py, plus copies of the other fonts), that folder is used instead.
+ * Without the folder, or in Classic, the stock answer. Entry of 0x080692f8 branches here. */
+#define os_path_assign ((void (*)(void *, const char *))0x0826e428)
+__attribute__((used, section(".text.entry"))) void e_font_dir(int kind, int8_t *vol, void *path)
+{
+    static int have = -1;
+    int size;
+    if (kind != 1) return;
+    if (have < 0) {
+        have = file_read("FLAC\\Fonts\\Helvetica.ttf", 0, 0, &size) >= 0 && size > 0;
+        log_s("   fonts: "); log_s(have && theme_style ? "FLAC\\Fonts (Modern)" : "Resources/Fonts");
+        log_s(", style "); log_d(theme_style); log_c('\n');
+    }
+    if (have && theme_style) { *vol = 0; os_path_assign(path, "FLAC\\Fonts"); return; }
+    *vol = 4;
+    os_path_assign(path, "Resources/Fonts");
 }
