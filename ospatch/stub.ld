@@ -1,0 +1,1 @@
+SECTIONS { .all 0x08277bb8 : SUBALIGN(4) { *(.text.flac_hook) *(.text.flac_dump) *(.text*) *(.rodata*) *(.data*) *(.bss*) *(COMMON) . = ALIGN(4); } .trp 0x08278144 : { *(.trp) } /DISCARD/ : { *(.ARM.*) *(.comment) } }

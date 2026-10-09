@@ -1,0 +1,39 @@
+# Apple firmware and anything derived from it: never commit (copyright)
+*.dec
+*.osos
+ospatch/builds/
+ospatch/syms.txt
+osre/*.bin
+osre/xref.pickle
+bootloader/ipod-fwpart*.bin
+runtime/settings_data.h
+runtime/settings_data.json
+
+# build outputs
+build/
+runtime/e.bin
+runtime/e.elf
+runtime/e.syms
+*.o
+*.elf
+*.bin
+*.dfu
+*.ipod
+*.rock
+*.dSYM/
+libsync/libsync-host
+libsync/libsync-host.opt
+libsync/libsync-asan
+libsync/fatdir_host
+libsync/fatdir_asan
+
+# device logs, database snapshots, local backups
+backups/
+*.pre-v2
+*.pre-v6
+*.bak
+.DS_Store
+__pycache__/
+
+# local tool settings
+.claude/settings.local.json
