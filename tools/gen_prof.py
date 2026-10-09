@@ -13,6 +13,10 @@ EXTRA = [0x08052304, 0x080522fc, 0x0805230c, 0x08052f44, 0x08052198, 0x0829fefc,
          0x08191f28, 0x0807037c, 0x082bb36c, 0x080defd8, 0x0802cf18, 0x082d90c0, 0x0826e9e4,
          0x082d5dd4, 0x082d500c]
 DEPTH, LIMIT = 6, 3000
+import os as _os
+if _os.environ.get('PROF_ROOTS'):   # e.g. the UI build: these roots first, depth from PROF_DEPTH
+    ROOTS = [int(x, 16) for x in _os.environ['PROF_ROOTS'].split(',')] + ROOTS
+    DEPTH = int(_os.environ.get('PROF_DEPTH', DEPTH))
 # hot tiny functions from an earlier dump: the hook cost would dwarf their own time
 import os
 SKIP = {int(l, 16) for l in open(os.path.join(os.path.dirname(__file__), 'prof_skip.txt')) if l.strip()}

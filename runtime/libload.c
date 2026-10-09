@@ -50,10 +50,18 @@ static void boot_without_library(void)
     log_s("   mount: volume 0 rc "); log_d(rc); log_s(" ("); log_d((int)(TIMER_E - t)); log_s(" us)\n");
     settings_boot(1);
     { void update_check(void); update_check(); }
+#ifdef DEFER_START_AT_BOOT
+    deferred = 2;
+    log_s("   library: loading in the background task from boot\n");
+    log_t(1);
+    log_flush();
+    os_start_reload(os_music_app(0));
+#else
     deferred = 1;
     log_s("   library: load deferred until the first frame\n");
     log_t(1);
     log_flush();
+#endif
 }
 
 /* render pass hook: the menu is on screen */
@@ -75,6 +83,12 @@ void libload_first_frame(void)
     if (seen) return;
     seen = 1;
     log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
+    { void uifast_first_frame(void); uifast_first_frame(); }
+    { void rc_stop(void); rc_stop(); }
+#ifdef PROF_UI
+    { void prof_mark(const char *); void prof_stop(int); prof_mark("first frame"); prof_stop(1); }
+#endif
+    log_flush();
 }
 #endif
 
@@ -152,14 +166,20 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     }
     artdb_update();                    /* FLAC\covers.db follows the album folders */
     log_t(5);
+#ifndef NO_MIKEY
     if (mikey_pending) { mikey_pending = 0; mikey_events(); }
+#endif
     log_s("   "); log_d(path_fixed); log_s(" non-ASCII locations given their full length\n");
     path_fixed = 0;
     power_log();
     log_t(6);
     log_timeline();
 #ifdef PROF
+#ifndef PROF_UI
     { void prof_mark(const char *); prof_mark(task ? "reload done" : "library load done"); extern int krec_on; extern uint32_t kwin; krec_on = 1; kwin = TIMER_E + 450000; }
+#else
+    { void prof_mark(const char *); prof_mark(task ? "reload done" : "library load done"); }
+#endif
     { void fat_state_log(const char *); fat_state_log("before the log write"); }
 #endif
     if (task) { void fatdir_release(void); fatdir_release(); }   /* at boot, the UI init hook closes it */

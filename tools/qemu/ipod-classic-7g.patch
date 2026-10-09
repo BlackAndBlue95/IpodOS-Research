@@ -1,0 +1,124 @@
+diff --git a/hw/arm/ipod_classic/ipod_classic.c b/hw/arm/ipod_classic/ipod_classic.c
+index f28ee3b..5ce967d 100644
+--- a/hw/arm/ipod_classic/ipod_classic.c
++++ b/hw/arm/ipod_classic/ipod_classic.c
+@@ -75,10 +75,72 @@ static void ipod_classic_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
+  * guest is free to overwrite and because a guest-requested reboot (SWRCON)
+  * has to come back to a machine that looks freshly powered on.
+  */
++
++/*
++ * SHA-1 engine at 0x38000000, as Rockbox's crypto-s5l8702.c drives it: software pads the
++ * message; each 64-byte block goes into DATAIN (+0x40, 16 words, bytes in memory order), then
++ * CONFIG |= 2 starts it (bit 0 busy, always clear here); bit 3 set in the same write continues
++ * from the previous block, clear starts a new hash. RESULT (+0x20, 5 words) holds the digest in
++ * byte order. RESET (+0x04) bit 0 resets. The start bit clears when the block is done. Without it every digest read as zero (the iTunesDB
++ * signature check then only accepted an all-zero signature).
++ */
++typedef struct { uint32_t h[5], in[16], config; } IPodSHA1;
++static IPodSHA1 ipod_sha1;
++static uint32_t sha_rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
++static void sha1_block(IPodSHA1 *s)
++{
++    uint32_t w[80], a, b, c, d, e, f, k, t;
++    int i;
++    for (i = 0; i < 16; i++) w[i] = bswap32(s->in[i]);
++    for (i = 16; i < 80; i++) w[i] = sha_rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
++    a = s->h[0]; b = s->h[1]; c = s->h[2]; d = s->h[3]; e = s->h[4];
++    for (i = 0; i < 80; i++) {
++        if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
++        else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
++        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
++        else { f = b ^ c ^ d; k = 0xca62c1d6; }
++        t = sha_rol(a, 5) + f + e + k + w[i];
++        e = d; d = c; c = sha_rol(b, 30); b = a; a = t;
++    }
++    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
++}
++static void sha1_init(IPodSHA1 *s)
++{
++    s->h[0] = 0x67452301; s->h[1] = 0xefcdab89; s->h[2] = 0x98badcfe; s->h[3] = 0x10325476; s->h[4] = 0xc3d2e1f0;
++}
++static uint64_t ipod_sha1_read(void *opaque, hwaddr off, unsigned size)
++{
++    IPodSHA1 *s = opaque;
++    if (getenv("SHATRACE") && (off < 0x40 || off >= 0x80)) fprintf(stderr, "SHA RD +0x%02x\n", (unsigned)off);
++    if (off == 0x00) return s->config & ~1u;
++    if (off >= 0x20 && off < 0x34) return bswap32(s->h[(off - 0x20) / 4]);
++    if (off >= 0x40 && off < 0x80) return s->in[(off - 0x40) / 4];
++    return 0;
++}
++static void ipod_sha1_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
++{
++    IPodSHA1 *s = opaque;
++    if (getenv("SHATRACE") && (off < 0x40 || off >= 0x80 || off == 0x40)) fprintf(stderr, "SHA WR +0x%02x = 0x%08x\n", (unsigned)off, (unsigned)val);
++    if (off == 0x04) { if (val & 1) { sha1_init(s); s->config = 0; } return; }
++    if (off >= 0x40 && off < 0x80) { s->in[(off - 0x40) / 4] = val; return; }
++    if (off == 0x00) {
++        s->config = val;
++        if (val & 2) {                   /* start: bit 3 continues the running hash */
++            if (!(val & 8)) sha1_init(s);
++            sha1_block(s);
++            s->config &= ~2u;            /* done at once; the start bit clears, as busy would */
++        }
++    }
++}
++static const MemoryRegionOps ipod_sha1_ops = {
++    .read = ipod_sha1_read, .write = ipod_sha1_write, .endianness = DEVICE_NATIVE_ENDIAN,
++    .valid = { .min_access_size = 4, .max_access_size = 4 },
++};
++
+ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
+ {
+     uint32_t sysinfo[S5L8702_SYSINFO_SIZE / 4] = {
+-        [S5L8702_SYSINFO_HW_ID_OFF / 4]     = cpu_to_le32(S5L8702_HW_ID),
++        [S5L8702_SYSINFO_HW_ID_OFF / 4]     = cpu_to_le32(getenv("IPOD_HWID") ? (uint32_t)strtoul(getenv("IPOD_HWID"), NULL, 0) : S5L8702_HW_ID),
+         [S5L8702_SYSINFO_DRAM_SIZE_OFF / 4] = cpu_to_le32(SDRAM_MEM_SIZE),
+         [S5L8702_SYSINFO_DRAM_BASE_OFF / 4] = cpu_to_le32(SDRAM_MEM_BASE),
+     };
+@@ -87,6 +149,16 @@ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
+     uint8_t zero[0x100] = { 0 };
+ 
+     cpu_physical_memory_write(S5L8702_BOOTINFO_BASE, zero, sizeof(zero));
++    if (getenv("IPOD_SYSINFO")) {         /* a SysInfo dumped from a real iPod, as its bootloader passed it */
++        FILE *f = fopen(getenv("IPOD_SYSINFO"), "rb");
++        if (f) {
++            size_t got = fread(sysinfo, 1, sizeof(sysinfo), f);
++            fclose(f);
++            (void)got;
++            sysinfo[S5L8702_SYSINFO_DRAM_SIZE_OFF / 4] = cpu_to_le32(SDRAM_MEM_SIZE);
++            sysinfo[S5L8702_SYSINFO_DRAM_BASE_OFF / 4] = cpu_to_le32(SDRAM_MEM_BASE);
++        }
++    }
+     cpu_physical_memory_write(S5L8702_SYSINFO_BASE, sysinfo, sizeof(sysinfo));
+     cpu_physical_memory_write(S5L8702_BOOTINFO_TAG, &tag, sizeof(tag));
+     cpu_physical_memory_write(S5L8702_BOOTINFO_PTR, &ptr, sizeof(ptr));
+@@ -861,7 +933,12 @@ static void ipod_classic_machine_init(MachineState *machine)
+      * the block behaved differently -- and that is not a difference any A/B
+      * comparison between the two should be carrying.
+      */
+-    create_unimplemented_device("s5l8702.sha1", SHA1_MEM_BASE, 0x100000);
++    {
++        MemoryRegion *shamr = g_new(MemoryRegion, 1);
++        sha1_init(&ipod_sha1);
++        memory_region_init_io(shamr, NULL, &ipod_sha1_ops, &ipod_sha1, "s5l8702.sha1", 0x1000);
++        memory_region_add_subregion(get_system_memory(), SHA1_MEM_BASE, shamr);
++    }
+     if (!getenv("SHA1_OFF")) {
+         dev = qdev_new("ipodtouch.sha1");
+         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+diff --git a/hw/arm/ipod_classic/ipod_classic_ata.c b/hw/arm/ipod_classic/ipod_classic_ata.c
+index 7d00421..7247c14 100644
+--- a/hw/arm/ipod_classic/ipod_classic_ata.c
++++ b/hw/arm/ipod_classic/ipod_classic_ata.c
+@@ -63,7 +63,9 @@ static void ipod_classic_ata_set_irq(void *opaque, int n, int level)
+ 
+     s->intrq = level;
+     if (level) {
+-        s->reg[S5L8702_ATA_IRQSTAT / 4] |= S5L8702_ATA_INTRQ_BIT;
++        /* latched in bit 0 and bit 2: the 6G driver unmasks bit 0, the 7G driver waits on bit 2
++           (mask 4) and acknowledges by writing back what it read */
++        s->reg[S5L8702_ATA_IRQSTAT / 4] |= S5L8702_ATA_INTRQ_BIT | 4u;
+     }
+     ipod_classic_ata_update_irq(s);
+ }

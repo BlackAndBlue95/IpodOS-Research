@@ -207,7 +207,11 @@ void settings_early(void)
     log_t(7);
     log_s("   t: ui init at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
 #ifdef PROF
+#ifdef PROF_UI
+    { void prof_mark(const char *); extern int krec_on; extern uint32_t kwin; prof_mark("ui init"); krec_on = 1; kwin = TIMER_E; }
+#else
     { void prof_mark(const char *); void prof_stop(int); void fat_state_log(const char *); fat_state_log("at ui init"); prof_mark("ui init"); prof_stop(1); }
+#endif
 #endif
     fatdir_release();                  /* the library load's raw reads are done */
     if (file_loaded) log_flush();

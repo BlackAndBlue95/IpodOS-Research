@@ -25,6 +25,12 @@ ap.add_argument('--e', required=True)
 ap.add_argument('--syms', required=True)
 ap.add_argument('--out', required=True)
 ap.add_argument('--hooks', choices=('libload', 'all'), default='all')
+ap.add_argument('--ui-fast', action='store_true', help='UI start-up fixes (uifast.c)')
+ap.add_argument('--ui-tick-now', action='store_true', help='R24 experiment: first pre-build tick at once (not device-safe)')
+ap.add_argument('--ui-safepush', action='store_true', help='R27 experiment: finish the build before a screen push (needs -DSAFEPUSH; not device-safe)')
+ap.add_argument('--ui-lazy', action='store_true', help='screens built in the background after the first frame')
+ap.add_argument('--no-glyph-pass', action='store_true', help='experiment: no glyph pre-render at boot')
+ap.add_argument('--games-defer', action='store_true', help='skip the games catalog warm-up at boot')
 ap.add_argument('--prof', action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
 ap.add_argument('--governor-floor', action='store_true',
                 help='with the backlight on, the OS governor floors at L1 (108 MHz) instead of pinning L0')
@@ -185,6 +191,37 @@ if a.hooks == 'all':
     # I2C bus 0 at interrupt setup: Apple's full reset (0x08360b94), not the light init that keeps
     # the bootloader's state (interrupt off, ECLK); otherwise each PMU transfer times out at 100 ms
     wr(0x0804d4d0, 0xeb0c4daf, 0xeb0c4cf3)
+    if a.ui_fast:       # UI start: the sorted-list insert appends without scanning when it would append anyway
+        wr(0x08119cf8, 0xea000000 | (((sym['e_lru_insert'] - 0x08119cf8 - 8) >> 2) & 0xffffff), 0xe5951004)
+        wr(0x081074c4, 0xeb000000 | (((sym['e_games_count'] - 0x081074c4 - 8) >> 2) & 0xffffff), 0xebffb7ae)   # games count label: no catalog load
+        wr(0x082bb36c, 0xea000000 | (((sym['e_devread'] - 0x082bb36c - 8) >> 2) & 0xffffff), 0xe92d43f8)    # device read: boot read cache (drive 1)
+        wr(0x082bb418, 0xea000000 | (((sym['e_devwrite'] - 0x082bb418 - 8) >> 2) & 0xffffff), 0xe92d43f8)   # device write: empties it
+        for at, w0, name in ((0x080593cc, 0xe92d4070, 'e_gettime'), (0x082da8fc, 0xe92d4070, 'e_adc'),
+                             (0x082dac8c, 0xe92d4038, 'e_chg'), (0x080a9fdc, 0xe92d4038, 'e_ext')):
+            wr(at, 0xea000000 | (((sym[name] - at - 8) >> 2) & 0xffffff), w0)   # PMU reads (time, battery, charging): 1 s cache
+        wr(0x0815a5b4, 0xea000000 | (((sym['e_wheelwait'] - 0x0815a5b4 - 8) >> 2) & 0xffffff), 0xe92d4010)   # measure the UI's wheel power-up wait
+        wr(0x081ef548, 0xe1a00000, 0xebfbbea2)   # loading progress: no 10 ms sleep per animation step (library load and home build)
+    if a.ui_lazy:       # boot builds the screens in the background (Apple's timer-driven path after disk mode), not all up front
+        wr(0x0817cd34, 0xe3b01001, 0xe3510000)   # cmp r1, #0 -> movs r1, #1
+    if a.ui_tick_now:   # (R24, not device-safe yet) the first tick runs now, not on a later timer event:
+        # the lazy path's `addne r0, r4, #0xec; ...; bne 0x08121074` (arm the timer) becomes
+        # `movne r0, r4; ...; bne 0x0817d360` (the tick: first screens now, the timer re-armed after)
+        wr(0x0817cd44, 0x11a00004, 0x128400ec)
+        wr(0x0817cd4c, 0x1a000000 | (((0x0817d360 - 0x0817cd4c - 8) >> 2) & 0xffffff), 0x1afe90c8)
+    if a.ui_lazy:
+        wr(0x081aeaf8, 0xea000000 | (((sym['e_prebuild_yield'] - 0x081aeaf8 - 8) >> 2) & 0xffffff), 0xeaffffd6)   # incremental pre-build: one screen per tick
+        wr(0x081ae9d0, 0xeb000000 | (((sym['e_pb_entry'] - 0x081ae9d0 - 8) >> 2) & 0xffffff), 0x03a05000)   # state 0 stays blocking, the flag is kept
+        wr(0x081aea54, 0xea000000 | (((sym['e_pb_state0_done'] - 0x081aea54 - 8) >> 2) & 0xffffff), 0xea000032)   # background mode returns after state 0
+        wr(0x081aeb1c, 0xea000000 | (((sym['e_pb_done'] - 0x081aeb1c - 8) >> 2) & 0xffffff), 0xe3a00003)   # pre-build done: one home reload in background mode
+        if a.ui_safepush:   # (R27, not device-safe yet) screen push: finish the background build first
+            wr(0x08104fa4, 0xea000000 | (((sym['e_push'] - 0x08104fa4 - 8) >> 2) & 0xffffff), 0xe92d43fe)
+            wr(0x081aeb4c, 0xeb000000 | (((sym['e_pb_exit'] - 0x081aeb4c - 8) >> 2) & 0xffffff), 0xe5c90000)   # pre-build exit: not running any more
+        if 'e_ffile' in sym:   # experiment build: per-font-file pass deferred during the boot phase
+            wr(0x0826a4e4, 0xea000000 | (((sym['e_ffile'] - 0x0826a4e4 - 8) >> 2) & 0xffffff), 0xe92d43f8)
+    if a.no_glyph_pass:   # experiment: skip the boot glyph pre-render (state 2 of the screen pre-build)
+        wr(0x081aeb08, 0xe3a00001, 0xebffff6d)   # bl 0x081ae8c4 -> mov r0, #1
+    if a.games_defer:   # Games manager init: skip the catalog warm-up (Manifest.plist parse); it loads on first use
+        wr(0x080f62d8, 0xe1a00000, 0xebfffc29)
     if 'hk_tpost' in sym:   # profiler builds: log the boot's software timers
         wr(0x0808487c, 0xeb000000 | (((sym['hk_tpost'] - 0x0808487c - 8) >> 2) & 0xffffff), 0xeb018688)
         wr(0x0808485c, 0xeb000000 | (((sym['hk_tcb'] - 0x0808485c - 8) >> 2) & 0xffffff), 0xe12fff31)

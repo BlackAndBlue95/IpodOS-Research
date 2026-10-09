@@ -183,7 +183,7 @@ static int bm_px(const uint8_t *d, uint32_t fmt, uint32_t stride, uint32_t x, ui
     { uint32_t c = d[0x1c + y * stride + 2 * x] | d[0x1c + y * stride + 2 * x + 1] << 8;
       out[0] = (c >> 11) << 3; out[1] = ((c >> 5) & 63) << 2; out[2] = (c & 31) << 3; out[3] = 255; return 1; }
 }
-static void flatten_bar(uint8_t *d, uint32_t fmt, uint32_t stride, uint32_t w, uint32_t h, uint32_t id)
+static void flatten_bar(uint8_t *d, uint32_t fmt, uint32_t stride, uint32_t w, uint32_t h, uint32_t id, int mode)
 {
     uint32_t x, y, n = 0, nrows = 0, spread = 0, sr = 0, sg = 0, sb = 0;
     int rowmin = 255, rowmax = 0, page;
@@ -200,10 +200,15 @@ static void flatten_bar(uint8_t *d, uint32_t fmt, uint32_t stride, uint32_t w, u
         L = lsum / cnt; nrows++; spread += lmax - lmin; if (L < rowmin) rowmin = L; if (L > rowmax) rowmax = L;
     }
     if (!nrows || !n) return;
-    page = id == 0x0dad00f6 || id == 0x0dad00f9;             /* StatusBarWhite_Background, Background_LightBlue */
+    /* StatusBarWhite_Background takes the page colour. Background_LightBlue (the main menu's right
+       pane, behind a white note icon and white text) does too in Dark; in Light the page colour is
+       white, so it is flattened to its own average grey and the white contents stay readable */
+    page = id == 0x0dad00f6 || (id == 0x0dad00f9 && mode);
+    if (id == 0x0dad00f9 && !mode) { flat[0] = sr / n; flat[1] = sg / n; flat[2] = sb / n; goto fill; }
     if (!page && (spread / nrows > 12 || rowmax - rowmin < 16)) return;
     if (page) { flat[0] = theme_pal_white[0]; flat[1] = theme_pal_white[1]; flat[2] = theme_pal_white[2]; }
     else { flat[0] = sr / n; flat[1] = sg / n; flat[2] = sb / n; }
+fill:
     if (fmt == 0x64 || fmt == 0x65) {
         uint32_t cnt = rd32(d + 0x1c), i;
         for (i = 0; i < cnt; i++) { uint8_t *p = d + 0x20 + 4 * i; if (!p[3]) continue; p[2] = flat[0]; p[1] = flat[1]; p[0] = flat[2]; }
@@ -259,7 +264,7 @@ static uint8_t *bmap_themed(const uint8_t *src, uint32_t size, int cls, const ui
             p[0] = c; p[1] = c >> 8;
         }
     }
-    if (theme_style && cls != 2) flatten_bar(d, fmt, stride, w, h, id);
+    if (theme_style && cls != 2) flatten_bar(d, fmt, stride, w, h, id, mode);
     return d;
 }
 
@@ -441,6 +446,7 @@ static void __attribute__((used)) appinit_c(uint32_t *r)
     { void prof_start(void); prof_start(); }
 #endif
     log_t(0);
+    { void rc_start(void); rc_start(); }   /* boot read cache for the resource volume, until the first frame */
     {   /* the bootloader's stage times (its own clock; the OS restarts the timer) */
         volatile uint32_t *bt = (volatile uint32_t *)0x2203ff40;
         if (bt[0] == 0x4d544c42) {
@@ -688,13 +694,14 @@ void theme_redraw_all(void)
 }
 void theme_walk(int mode, int accent)
 {
+    uint32_t tw0 = TIMER_E;
     uint8_t *root = ((uint8_t *(*)(void))0x0811340c)();
     walk_live = applied_mode >= 0;           /* a switch after boot: the theme was applied before */
     walk_mode = mode; walk_accent = accent; walk_n = 0; walk_nodes = 0; light_left = 0;
     if (!root || !ptr_ok((uint32_t)root)) return;
     children_vt = rd32(root + 0xa8);
     walk_view(root, 0);
-    log_s("   theme: live views remapped "); log_d(walk_n); log_s(" of "); log_d(walk_nodes); log_c('\n');
+    log_s("   theme: live views remapped "); log_d(walk_n); log_s(" of "); log_d(walk_nodes); log_s(" ("); log_d((int)((TIMER_E - tw0) / 1000)); log_s(" ms)\n");
 }
 /* Now Playing lives outside the view tree until it is shown, so a switch cannot reach it. The
    remap runs again when its art is first requested after a switch. */
@@ -796,24 +803,39 @@ __attribute__((naked, section(".text.entry"), used)) void hk_marq(void)
 }
 /* ---- apply ---- */
 int theme_is_applied(int mode, int accent) { return applied_mode == mode && applied_accent == accent; }
+#define BMCACHE 160
+static uint8_t *bmcache[BMCACHE];
+static uint32_t bmcache_key[BMCACHE];
 int theme_apply(int mode, int accent, int rebuild_ui)
 {
     const uint8_t *acc;
     uint32_t i, size, v;
     int bad = 0, done = 0;
     uint8_t rgb[3];
+    uint32_t t0 = TIMER_E;
     if (accent < 0 || accent >= NACCENT) accent = 0;
     acc = accents[accent];
+    /* the palette first: Modern flattens bars and pages to theme_pal_white while the bitmaps are
+       themed. Computed after them, the first apply flattened them to the previous (white) value,
+       and views built from those resources kept a white status bar and page */
+    apply_code_colours(mode, accent);
     for (i = 0; i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
         uint32_t id = cls == 0 ? theme_bmap_chrome[i] : cls == 1 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
                     : theme_bmap_accent[i - sizeof theme_bmap_chrome / 4 - sizeof theme_bmap_bg / 4];
         const uint8_t *src = orig_of(T_BMAP, id, &size);
-        uint8_t *d;
+        uint8_t *d = 0;
+        uint32_t key = 0x80000000u | (uint32_t)mode << 16 | (uint32_t)accent << 8 | (uint32_t)theme_style;
         if (!src) { bad++; continue; }
-        d = (mode || accent || cls == 2 || theme_style) ? bmap_themed(src, size, cls, acc, mode, id) : 0;
+        /* the themed copy of each bitmap is kept: the second pass at UI init (the OS reloads the
+           resources after the library load) and repeated applies only write it back */
+        if (i < BMCACHE && bmcache_key[i] == key) d = bmcache[i];
+        else if (mode || accent || cls == 2 || theme_style) {
+            d = bmap_themed(src, size, cls, acc, mode, id);
+            if (i < BMCACHE) { if (bmcache[i]) os_free(bmcache[i]); bmcache[i] = d; bmcache_key[i] = key; }
+        } else if (i < BMCACHE) { if (bmcache[i]) os_free(bmcache[i]); bmcache[i] = 0; bmcache_key[i] = key; }
         if (rsrc_write(T_BMAP, id, d ? d : src, size)) bad++; else done++;
-        if (d) os_free(d);
+        if (d && i >= BMCACHE) os_free(d);
     }
     for (i = 0; i < sizeof theme_colr / 4; i++) {
         const uint8_t *src = orig_of(T_COLR, theme_colr[i], &size);
@@ -831,10 +853,17 @@ int theme_apply(int mode, int accent, int rebuild_ui)
         if (rsrc_write(T_COLR, theme_colr[i], &v, 4)) bad++; else done++;
     }
     theme_named(mode, accent, acc);
-    apply_code_colours(mode, accent);
     applied_mode = mode; applied_accent = accent;
     log_s("   theme: "); log_s(mode ? "dark, accent " : "light"); if (mode) log_s(accent_names[accent]);
-    log_s(", resources patched "); log_d(done); log_s(", failed "); log_d(bad); log_c('\n');
+    log_s(", resources patched "); log_d(done); log_s(", failed "); log_d(bad); log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");
     (void)rebuild_ui;
     return bad;
+}
+
+/* the current accent as RGB (the boot progress bar) */
+void theme_accent_rgb(uint8_t out[3])
+{
+    extern int theme_accent;
+    int a = theme_accent >= 0 && theme_accent < NACCENT ? theme_accent : 0;
+    out[0] = accents[a][0]; out[1] = accents[a][1]; out[2] = accents[a][2];
 }

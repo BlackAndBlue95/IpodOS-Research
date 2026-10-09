@@ -80,6 +80,22 @@ static void callers_add(uint32_t fn, uint32_t lr)
     }
 }
 
+/* parent -> child call edges in the window (krec_on): count and total time, for the call tree */
+#define NEDGE 16384
+struct edge { uint16_t p, c; uint32_t n, incl; };
+static struct edge *edges;
+static int edge_full;
+static void edge_add(uint32_t p, uint32_t c, uint32_t el)
+{
+    uint32_t h = (p * 2654435761u ^ c * 40503u) & (NEDGE - 1), k;
+    for (k = 0; k < 64; k++, h = (h + 1) & (NEDGE - 1)) {
+        struct edge *e = &edges[h];
+        if (!e->n) { e->p = p; e->c = c; e->n = 1; e->incl = el; return; }
+        if (e->p == p && e->c == c) { e->n++; e->incl += el; return; }
+    }
+    edge_full++;
+}
+
 /* frame: the trampoline's saved r0-r3, ip, lr; the function's own stack pointer is just above */
 uint32_t prof_enter(uint32_t i, uint32_t *frame)
 {
@@ -128,6 +144,7 @@ uint32_t prof_exit(uint32_t sp)
     el = now - f->t0;
     s = &st[f->idx];
     s->count++; s->incl += el; s->excl += el > f->child ? el - f->child : 0;
+    if (krec_on && edges) edge_add(f->parent >= 0 && pool[f->parent].gen == f->pgen ? pool[f->parent].idx : 0xffff, f->idx, el);
     if (krec_on) { wst[f->idx].count++; wst[f->idx].incl += el; wst[f->idx].excl += el > f->child ? el - f->child : 0; }
     if (el > s->max) s->max = el;
     if (el >= 5000 && nlong < NLONG) { struct lng *g = &longs[nlong++]; g->idx = f->idx; g->tn = f->tn; g->t0 = f->t0; g->el = el; g->lr = f->lr; }
@@ -167,8 +184,11 @@ void prof_start(void)
     memset(st, 0, sizeof st);
     memset(taskseen, 0, sizeof taskseen); ntask = 0; maxact = 0; nlong = 0;
     trace = os_malloc(NTRACE * 8); ntrace = 0;
+    edges = os_malloc(NEDGE * sizeof *edges); if (edges) memset(edges, 0, NEDGE * sizeof *edges);
     { void samp_start(void); samp_start(); }
+#ifndef PROF_NOPROBES
     prof_patch(1);
+#endif
     t_start = TIMER_E;
     prof_mark("profiling on");
 }
@@ -200,6 +220,11 @@ void prof_stop(int load)
         vol_delete(name);
         file_write(name, buf, sz);
         os_free(buf);
+    }
+    if (edges) {
+        vol_delete("FLAC\\edges.bin");
+        file_write("FLAC\\edges.bin", edges, NEDGE * sizeof *edges);
+        log_s("   edges: "); log_d(edge_full); log_s(" dropped\n");
     }
     if (trace) {
         uint32_t *tb = trace;

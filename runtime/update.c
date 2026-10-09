@@ -59,11 +59,26 @@ static int xfer(Dev *d, int write, void *buf, uint32_t lba, uint32_t n)
 static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static void st32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
 
+void updscreen_begin(void);
+void updscreen_progress(uint32_t k, uint32_t n, uint16_t c);
+void updscreen_fill(uint16_t c);
+int updscreen_ok(void);
+#define BAR_CHECK 0xffe0                  /* yellow: reading the file to compare with the installed copy */
+#define BAR_WRITE 0x07e0                  /* green: writing and verifying chunks */
+#define BAR_DIR   0x001f                  /* blue: directory entry, then restart */
+#define BAR_FAIL  0xf800                  /* red: failed or abandoned, the OS boots on */
+
 static int fail(const char *what, int rc)
 {
+    updscreen_fill(BAR_FAIL);
     log_s("   update: FAILED, "); log_s(what); log_s(" rc "); log_d(rc); log_c('\n'); log_flush();
     return rc;
 }
+
+/* progress in IRAM past the bootloader's mailbox words (0x2203ff00..0x2203ff63): survives the
+   watchdog reset, so the boot after a stuck update can say how far it got */
+#define UPD_PROGRESS ((volatile uint32_t *)0x2203ff80)   /* 'UPDP', chunk, chunks, time us */
+void fatdir_release(void);
 
 /* called from libload() before anything else uses the disk */
 void update_check(void)
@@ -75,14 +90,23 @@ void update_check(void)
     File *f = 0;
     void *m = 0;
 
+    if (UPD_PROGRESS[0] == 0x50445055) {
+        log_s("   update: last attempt stopped at chunk "); log_d((int)UPD_PROGRESS[1]); log_s(" of "); log_d((int)UPD_PROGRESS[2]);
+        log_s(", "); log_d((int)(UPD_PROGRESS[3] / 1000)); log_s(" ms after boot\n");
+        UPD_PROGRESS[0] = 0;
+    }
     n = file_read(UPD_FILE, hdr, sizeof hdr, &size);
     if (n < (int)sizeof hdr) return;                                   /* no update file */
-    log_s("== update: "); log_s(UPD_FILE); log_s(" found, "); log_d(size); log_s(" bytes\n");
+    fatdir_release();                  /* our raw handle is closed while the updater has the card */
+    updscreen_begin();
+    log_s("== update: "); log_s(UPD_FILE); log_s(" found, "); log_d(size); log_s(" bytes, progress bar ");
+    log_s(updscreen_ok() ? "drawn\n" : "off (LCD interface did not answer)\n");
     log_flush();
     /* one attempt only: a marker is written before the first try. If it is still there, the last
        try did not finish, so the update file is removed. */
     n = file_read(UPD_TRY, hdr, 4, &i);
     if (n >= 0) {
+        updscreen_fill(BAR_FAIL);
         log_s("   update: a previous attempt did not finish: removing the file, not retrying\n");
         if (vol_delete(UPD_FILE)) vol_rename(UPD_FILE, UPD_DONE);
         vol_delete(UPD_TRY);
@@ -149,6 +173,7 @@ void update_check(void)
             if (n != (int)want) break;
             for (j = 0; j < want; j++) fsum += buf2[j];
             left -= want;
+            updscreen_progress((uint32_t)size - left, (uint32_t)size, BAR_CHECK);
         }
         f->vt->close(f); f->vt->del(f); f = 0;
         if (!left && fsum == want_sum) {
@@ -163,8 +188,10 @@ void update_check(void)
     log_s("   update: writing "); log_d((int)nchunks); log_s(" chunks at sector "); log_d((int)data_lba); log_c('\n'); log_flush();
 
     if (!(f = os_file_ctor(m, UPD_FILE, 1024, 1)) || f->vt->open(f)) { fail("open", -16); goto out; }
+    log_s("   update: file open for the copy\n"); log_flush();
     for (k = 0; k < nchunks; k++) {
         uint32_t want = (uint32_t)size - k * CHUNK, j;
+        UPD_PROGRESS[1] = k; UPD_PROGRESS[2] = nchunks; UPD_PROGRESS[3] = TIMER_E; UPD_PROGRESS[0] = 0x50445055;
         if (want > CHUNK) want = CHUNK;
         for (j = 0; j < CHUNK; j++) buf[j] = 0;
         n = f->vt->read(f, buf, (int)want, 2);
@@ -173,8 +200,15 @@ void update_check(void)
         if ((rc = xfer(d, 1, buf, data_lba + k * (CHUNK / ss), CHUNK / ss))) { f->vt->close(f); fail("write", rc); goto out; }
         if ((rc = xfer(d, 0, buf2, data_lba + k * (CHUNK / ss), CHUNK / ss))) { f->vt->close(f); fail("read back", rc); goto out; }
         for (j = 0; j < CHUNK; j++) if (buf[j] != buf2[j]) { f->vt->close(f); fail("verify", (int)(k * CHUNK + j)); goto out; }
+        updscreen_progress(k + 1, nchunks, BAR_WRITE);
+        if (k == 0 || (k & 31) == 31) {
+            log_s("   update: chunk "); log_d((int)k + 1); log_s(" of "); log_d((int)nchunks); log_s(" written and verified, ");
+            log_d((int)(TIMER_E / 1000)); log_s(" ms\n"); log_flush();
+        }
     }
     f->vt->close(f);
+    UPD_PROGRESS[1] = nchunks;
+    updscreen_fill(BAR_DIR);
     /* the directory entry: length and checksum of the osfl section */
     if ((rc = xfer(d, 0, buf, dir_lba, 1))) { fail("directory read", rc); goto out; }
     for (i = 0; i < 12; i++) {
@@ -195,6 +229,7 @@ void update_check(void)
     if (rc) { log_s("   update: rename rc "); log_d(rc); log_s(", deleting the file instead\n"); rc = vol_delete(UPD_FILE); }
     log_s("   update: osfl written, "); log_d(size); log_s(" bytes, checksum "); log_x(sum, 8);
     if (rc) { log_s(", the file could NOT be removed (rc "); log_d(rc); log_s("): no restart, remove it by hand\n"); log_flush(); return; }
+    UPD_PROGRESS[0] = 0;
     log_s(", file renamed, restart\n");
     log_flush();
     os_sleep_ms(500);
