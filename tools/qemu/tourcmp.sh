@@ -25,3 +25,4 @@ for v in range(2,n+1):
         except Exception as e: out.append('%s:?'%names[s-1])
     print('variant %d: %s'%(v-1,' '.join(out)))
 PY
+rm -f Z-tc*.img montc*.sock tcs*-*.ppm
