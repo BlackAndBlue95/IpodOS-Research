@@ -5,7 +5,7 @@ cd /Users/harrison/IPOD/build/qemu/run
 Q=../src/build/qemu-system-arm
 T="shot e wait shot e wait shot e wait shot e wait shot e wait shot e wait shot q q q q q q wait ret wait shot e e e e e e wait ret wait shot ret wait wait wait shot w wait w wait w wait w wait e e e e e wait ret wait shot e e e e e e wait ret wait shot w wait w wait q wait ret wait shot"
 i=0
-for k in "$@"; do i=$((i+1)); cp EF.img Z-tc$i.img; rm -f montc$i.sock; IPOD_SYSINFO=sysinfo-real.bin $Q -M iPod-Classic -kernel $k -serial null -drive if=ide,format=raw,file=Z-tc$i.img -display none -monitor unix:montc$i.sock,server,nowait >/dev/null 2>&1 & done
+for k in "$@"; do i=$((i+1)); cp -c EF.img Z-tc$i.img; rm -f montc$i.sock; IPOD_SYSINFO=sysinfo-real.bin $Q -M iPod-Classic -kernel $k -serial null -drive if=ide,format=raw,file=Z-tc$i.img -display none -monitor unix:montc$i.sock,server,nowait >/dev/null 2>&1 & done
 for j in $(seq 1 $i); do for w in $(seq 1 240); do python3 /Users/harrison/IPOD/tools/qemu/fatcat.py Z-tc$j.img 'FLAC\rtlog.txt' $((49160*4096)) 2>/dev/null | grep -q "first frame" && break; sleep 0.25; done; done
 pids=()
 setopt nonomatch; for j in $(seq 1 $i); do rm -f tcs$j-*.ppm; (/Users/harrison/IPOD/tools/qemu/tour.sh montc$j.sock tcs$j ${=T}) & pids+=($!); done
