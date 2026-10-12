@@ -111,7 +111,11 @@ if a.hooks == 'all':
         retarget(at, 0x080f32ec, sym['e_art_load'])            # artwork load
     for at in (0x082d6314, 0x082d9b14): retarget(at, 0x082d95dc, sym['e_lfn_batch'])   # FAT long names across sectors
     for at in (0x08163a6c, 0x08137dc0): retarget(at, 0x082c5f14, sym['e_art_clear'])   # white clear: album view, main menu art pane
-    wr(0x08270980, 0xeb000000 | (((sym['e_refl_gate'] - 0x08270980 - 8) >> 2) & 0xffffff), 0xe5940094)   # cover reflection load -> e_refl_gate, 0 in Modern style
+    retarget(0x08270adc, 0x083c89b0, sym['e_refl_verts'])     # cover reflection corners -> e_refl_verts: collapsed in Modern style
+    retarget(0x08298f80, 0x0804a840, sym['e_song_artist'])    # per-song artist text (Now Playing, song rows) -> e_song_artist: the song's own artist
+    retarget(0x081df3ec, 0x08267210, sym['e_opbar_ink'])      # Now Playing option bar label colours -> e_opbar_ink (Modern: light)
+    retarget(0x081df414, 0x08267210, sym['e_opbar_ink'])
+    retarget(0x0815c5b8, 0x08268b7c, sym['e_np_present'])     # Now Playing snapshot: Modern layout drawn from the cover Apple drew; no tilted-edge shading
     wr(0x08270728, 0x1b000000 | (((sym['e_cover_angle'] - 0x08270728 - 8) >> 2) & 0xffffff), 0x15901004)   # cover angle: Now Playing flat in Modern style
     if 'e_font_dir' in sym:   # fonts folder: FLAC\Fonts on the music volume in Modern style (theme.c)
         wr(0x080692f8, 0xea000000 | (((sym['e_font_dir'] - 0x080692f8 - 8) >> 2) & 0xffffff), 0xe3500001)

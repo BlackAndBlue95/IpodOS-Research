@@ -82,7 +82,13 @@ changed files keeping id, dbid, dates, play counts and rating, adds new files, d
 
 Not a rule, despite earlier belief: the OS loader (`0x0808a3ec`, jump table on mhod type at
 `0x0808accc`) reads string records in any order. Entries are still written in Finder's order
-(title, artist, album artist, composer, album, genre, type, location last).
+(title, artist, album artist, composer, album, genre, comment, type, location last).
+
+**Artists.** The OS lists Artists by the artist string (type 4) and ignores the album artist
+(type 22) for tracks, so the artist string holds the album artist (the song's artist when there is
+none). The song's own artist, when it differs, goes in the comment (type 8, track record `+0x4c`),
+and the per-song artist text (Now Playing, song rows: `0x08298f3c`) reads it first: `e_song_artist`
+(`runtime/libload.c`) replaces the call to `0x0804a840` at `0x08298f80`.
 
 ### Entry layout written for FLAC tracks
 `+0x20` file mtime, `+0x24` size, `+0x28` length ms, `+0x2c` track no, `+0x30` track total, `+0x34`
@@ -92,7 +98,7 @@ year, `+0x38` bitrate, `+0x3c` sample rate << 16, `+0x5c` disc, `+0x68` date add
 Kept from an existing entry: `0x10(4) 0x1f(1) 0x40(0x1c) 0x68(0x10) 0x79(1) 0x7c(8) 0x9c(9) 0xb2(1) 0x160(4)`.
 
 **Entry marker** at `+0x258` (16 bytes in the always-zero tail `0x210..0x26f`): `'FLSY'`, u16
-version (2), u16 flags (title from file name / no album / no artist), u32 sync time, u32 0. An
+version (4), u16 flags (title from file name / no album / no artist), u32 sync time, u32 0. An
 entry without the current marker is rebuilt once, keeping its history.
 
 ### Safety
@@ -177,6 +183,14 @@ TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read
   settings action crashes the OS, so the pane keeps its old colours until restart.
 - Scrolling titles: the mask is drawn with black ink (`e_marq_ink` replaces the call at
   `0x081a7e70`) and the real colour restored into the line canvas tint.
+- Modern Now Playing: the steady frame is drawn into a 320x240 RGB565 buffer by `0x0815c588`.
+  `e_cover_angle` (`0x08270728`) keeps the cover flat, `e_refl_verts` (`0x08270adc`) collapses the
+  reflection quad, and `e_np_present` (`art.c`, replaces `0x08268b7c` at `0x0815c5b8`, Apple's
+  tilted-edge shading) lays the frame out again from the cover Apple drew at (18, 38): a blurred,
+  darkened copy of it behind, the cover with rounded corners. Text positions are patched in the
+  layout resources (View `0x0dad088e`, VLyt `0x0dad089a`, `modern_np_layout`). The title takes the
+  accent on every marquee draw (`np_title_accent`); the progress bar and the option bar
+  (`OptionBar_NowPlaying_*`, labels via `e_opbar_ink` at `0x081df3ec`/`0x081df414`) are flat.
 - Colour math in `theme_rules.c` must match `host/theme_rules.py`; `host/rules_parity.py` checks it.
 - Automatic mode: NOAA sunrise/sunset (`sun.c`) for the city nearest the time zone (`cities.h`),
   checked on the clock tick (`0x0817ce28`).

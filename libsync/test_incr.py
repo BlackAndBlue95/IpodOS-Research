@@ -109,7 +109,7 @@ def item_ids(raw):
     return out
 
 def marker_ok(db):
-    return all(bytes(t.hdr[0x258:0x25c]) == b'FLSY' and t.hdr[0x25c] == 2 for t in db.tracks if t.u(24) == 0x464C4143)
+    return all(bytes(t.hdr[0x258:0x25c]) == b'FLSY' and t.hdr[0x25c] == 4 for t in db.tracks if t.u(24) == 0x464C4143)
 
 def loc_last(db):
     return all(t.mhods[-1][0] == 2 for t in db.tracks if t.u(24) == 0x464C4143) if hasattr(db.tracks[0], 'mhods') else True
@@ -129,7 +129,7 @@ old = by_loc(start); new = by_loc(db1)
 kept_ident = all(bytes(new[k].dbid) == bytes(old[k].dbid) and new[k].id == old[k].id for k in new if k in old)
 check(kept_ident, 'every existing entry kept its id and dbid')
 check(all(new[k].u(0x68) == old[k].u(0x68) and new[k].u(0x50) == old[k].u(0x50) and new[k].hdr[0x1f] == old[k].hdr[0x1f] for k in new if k in old), 'date added, play count and rating kept')
-check(marker_ok(db1), 'every FLAC entry carries the v2 marker')
+check(marker_ok(db1), 'every FLAC entry carries the v4 marker')
 check(all(t.hdr[0xb2] in (1, 2) and t.u(0x100) == 1 and t.u(0x1e0) == 0x7f and t.u(0x1f4) == t.id + 1 for t in db1.tracks if t.u(24) == 0x464C4143), "Finder's stamp fields present")
 check(all(u32(a, 16) != 0 for a in db1.albums), 'album ids nonzero')
 check(os.path.exists(dbp + '.old') and open(dbp + '.old', 'rb').read() == start_raw, 'previous database kept as iTunesDB.old')

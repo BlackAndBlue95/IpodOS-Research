@@ -26,9 +26,15 @@ Around the menus: Extras, Settings, a song list, Search and the hold screen whil
 
 ![Extras, Settings, Songs, Search and the hold screen](docs/screenshots/tour.png)
 
+Now Playing: the album cover on a blurred copy of itself, the title in the accent, a thin
+progress bar, and the shuffle choice as a flat segmented control:
+
+![Now Playing](docs/screenshots/now-playing.png)
+
 Single screens at twice the iPod's resolution are in [docs/screenshots](docs/screenshots). They
-are taken in the QEMU model (tools/qemu); the model does not draw Now Playing's text, so that
-screen is not shown.
+are taken in the QEMU model (tools/qemu) with
+[joelheaps/qemu-ipod-classic](https://github.com/joelheaps/qemu-ipod-classic)'s display
+compositor, which draws Now Playing's text.
 
 ## Layout
 - `runtime/` the code linked into the OS ("region E"); `runtime/flac/` playback and art;

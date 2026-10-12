@@ -272,10 +272,9 @@ static int __attribute__((used)) gtl_c(uint32_t *r)
     os_geo_free(tmp);
     h = geo[0]; w = geo[1]; stride = geo[2];
     TR(4) = 1;
-    /* the first 16 requests are logged */
-    logging = art_log < 16;
+    /* the first 16 requests are logged (their own count: the finds use art_log) */
+    { static int gtl_log; logging = gtl_log < 16; if (logging) gtl_log++; }
     if (logging) {
-        art_log++;
         log_s("   art: gtl fmt "); log_d((int16_t)r[2]); log_s(" geo "); log_d(w); log_c('x'); log_d(h); log_s(" stride "); log_d(stride);
         log_s(blk[0] == ARTMAGIC3 ? " ithmb" : " jpeg"); log_s(" task "); log_d(cur_task());
     }
@@ -718,4 +717,108 @@ static void art_load(uint8_t *t, void *alloc)
     ((uint32_t *)hdr)[6] = size;
     ((void (*)(void))0x0802ce00)();   /* clean D-cache: pixels go to the LCD by DMA */
     *(uint8_t **)(t + 4) = hdr;
+}
+
+/* Modern style Now Playing. Its steady-state frame comes from 0x0815c588: the cover render
+ * 0x082706d0 draws the album cover (flat: e_cover_angle) into a full-screen 320x240 RGB565 buffer,
+ * then 0x08268b7c draws Apple's edge shading for the 9-degree tilted cover over it (two slanted
+ * lines, (9, 42.7)-(145, 32.3) and (9, 162.5)-(145, 168.2)) and the buffer goes to the display. In
+ * Modern the shading is skipped and the frame is laid out again from the cover Apple just drew at
+ * (18, 38): a blurred, darkened copy of it fills the screen and the cover is drawn back in place
+ * with rounded corners. Other paths (the flip and transition animations, 0x08147a50) are left alone. */
+#define os_cover_present ((void (*)(uint32_t *))0x08268b7c)
+extern int theme_style;
+#define NP_SIDE 128
+#define NP_X 18                                 /* where Apple's flat cover lands */
+#define NP_Y 38
+#define NP_R 12                                 /* corner radius */
+static uint16_t *np_bg;                         /* 320x240 blurred background */
+static uint16_t rgb565(int r, int g, int b) { return (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | b >> 3); }
+static void unpack565(uint16_t c, int *r, int *g, int *b) { *r = (c >> 11) << 3; *g = ((c >> 5) & 63) << 2; *b = (c & 31) << 3; }
+static uint16_t mix565(uint16_t f, uint16_t o, int a)    /* a 0..256 */
+{
+    int fr, fg, fb, orr, og, ob;
+    unpack565(f, &fr, &fg, &fb); unpack565(o, &orr, &og, &ob);
+    return rgb565(orr + ((fr - orr) * a >> 8), og + ((fg - og) * a >> 8), ob + ((fb - ob) * a >> 8));
+}
+/* the cover, scaled to fill 320 wide (rows 16..111 of the 128), averaged into 40x30 cells, box
+   blurred twice, darkened to 40 %, then bilinear back to 320x240 */
+static void np_make_bg(const uint8_t *cov565)
+{
+    static int16_t g[3][30][40];
+    int x, y, c, i, j, k;
+    if (!np_bg && !(np_bg = os_malloc(320 * 240 * 2))) return;
+    for (y = 0; y < 30; y++) for (x = 0; x < 40; x++) {
+        int sr = 0, sg = 0, sb = 0, n = 0;
+        for (j = 16 + y * 96 / 30; j < 16 + (y + 1) * 96 / 30; j++)
+            for (i = x * 128 / 40; i < (x + 1) * 128 / 40; i++) {
+                int r, gg, b; unpack565(cov565[2 * (j * 128 + i)] | cov565[2 * (j * 128 + i) + 1] << 8, &r, &gg, &b);
+                sr += r; sg += gg; sb += b; n++;
+            }
+        if (!n) n = 1;
+        g[0][y][x] = sr / n; g[1][y][x] = sg / n; g[2][y][x] = sb / n;
+    }
+    for (k = 0; k < 2; k++) for (c = 0; c < 3; c++) {
+        static int16_t t[30][40];
+        for (y = 0; y < 30; y++) for (x = 0; x < 40; x++) {
+            int s = 0, n = 0;
+            for (j = y - 1; j <= y + 1; j++) for (i = x - 1; i <= x + 1; i++)
+                if (j >= 0 && j < 30 && i >= 0 && i < 40) { s += g[c][j][i]; n++; }
+            t[y][x] = s / n;
+        }
+        memcpy(g[c], t, sizeof t);
+    }
+    for (y = 0; y < 240; y++) {
+        int fy = y * 29 * 256 / 239, y0 = fy >> 8, wy = fy & 255, y1 = y0 < 29 ? y0 + 1 : 29;
+        for (x = 0; x < 320; x++) {
+            int fx = x * 39 * 256 / 319, x0 = fx >> 8, wx = fx & 255, x1 = x0 < 39 ? x0 + 1 : 39, v[3];
+            for (c = 0; c < 3; c++) {
+                int top = g[c][y0][x0] * (256 - wx) + g[c][y0][x1] * wx, bot = g[c][y1][x0] * (256 - wx) + g[c][y1][x1] * wx;
+                v[c] = ((top * (256 - wy) + bot * wy) >> 16) * 40 / 100;
+            }
+            np_bg[y * 320 + x] = rgb565(v[0], v[1], v[2]);
+        }
+    }
+    /* the top fades into the status bar's colour (the page colour) */
+    {
+        extern uint8_t theme_pal_white[4];
+        uint16_t bar = rgb565(theme_pal_white[0], theme_pal_white[1], theme_pal_white[2]);
+        for (y = 0; y < 52; y++) {
+            int a = y < 20 ? 256 : 256 - (y - 20) * 256 / 32;
+            for (x = 0; x < 320; x++) np_bg[y * 320 + x] = mix565(bar, np_bg[y * 320 + x], a);
+        }
+    }
+}
+__attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32_t *t)
+{
+    static uint16_t src[NP_SIDE * NP_SIDE];
+    static uint32_t src_sum;
+    const uint16_t *wh = (const uint16_t *)(t + 1);
+    int x, y, i;
+    uint32_t sum = 0;
+    if (theme_style && ((t[0] >> 26) == 2) && wh[0] == 320 && wh[1] == 240) {
+        uint16_t *buf = (uint16_t *)t[0];
+        for (y = 0; y < NP_SIDE; y++)                   /* the cover as Apple drew it */
+            memcpy(src + y * NP_SIDE, buf + (NP_Y + y) * 320 + NP_X, NP_SIDE * 2);
+        for (i = 0; i < NP_SIDE * NP_SIDE; i += 97) sum = sum * 31 + src[i];
+        if (!np_bg || sum != src_sum) { np_make_bg((const uint8_t *)src); src_sum = sum; }
+        if (np_bg) memcpy(buf, np_bg, 320 * 240 * 2);
+        for (y = 0; y < NP_SIDE; y++) {                 /* the cover, corners rounded over the background */
+            uint16_t *d = buf + (NP_Y + y) * 320 + NP_X;
+            const uint16_t *sp = src + y * NP_SIDE;
+            int cy = y < NP_R ? NP_R : y > NP_SIDE - 1 - NP_R ? NP_SIDE - 1 - NP_R : y;
+            for (x = 0; x < NP_SIDE; x++) {
+                int cx = x < NP_R ? NP_R : x > NP_SIDE - 1 - NP_R ? NP_SIDE - 1 - NP_R : x;
+                if (cx == x || cy == y) { d[x] = sp[x]; continue; }
+                {
+                    int dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy, r2o = (NP_R * 16 + 8) * (NP_R * 16 + 8) / 256, r2i = (NP_R * 16 - 8) * (NP_R * 16 - 8) / 256;
+                    if (d2 <= r2i) d[x] = sp[x];
+                    else if (d2 < r2o) d[x] = mix565(sp[x], d[x], (r2o - d2) * 256 / (r2o - r2i));
+                }
+            }
+        }
+        ((void (*)(void))0x0802ce00)();     /* clean D-cache before the buffer goes to the display */
+        return;
+    }
+    os_cover_present(t);
 }

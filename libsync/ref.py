@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reference: flacsync-mac-current.py's main() with its randomness and clock pinned, so libsync --full
-can be compared byte for byte. Reads --in, writes --out, scans ROOT/Music.
+can be compared byte for byte (except the comment string libsync adds for a song whose artist differs
+from the album artist). Reads --in, writes --out, scans ROOT/Music.
 usage: ref.py ROOT --in DB --out DB --now N --seed HEX"""
 import hashlib, importlib.util, os, struct, sys
 
@@ -45,7 +46,7 @@ for fp in files:
     size = os.path.getsize(fp); ms = int(ns * 1000 // sr)
     rel = '/' + os.path.relpath(fp, root)
     fs.add_track(db, rel, size, ms, sr, int(size * 8 / max(ms, 1)), t.get('TITLE') or os.path.splitext(os.path.basename(fp))[0],
-                 artist=t.get('ARTIST', ''), album=t.get('ALBUM', ''), albumartist=t.get('ALBUMARTIST', ''),
+                 artist=t.get('ALBUMARTIST') or t.get('ARTIST', ''), album=t.get('ALBUM', ''), albumartist=t.get('ALBUMARTIST') or t.get('ARTIST', ''),
                  genre=t.get('GENRE', ''), track_nr=fs.num(t.get('TRACKNUMBER')),
                  track_total=fs.num(t.get('TRACKTOTAL')) or fs.num((t.get('TRACKNUMBER', '') + '/').split('/')[1]),
                  disc_nr=fs.num(t.get('DISCNUMBER')), year=fs.num(t.get('DATE', '')[:4]), composer=t.get('COMPOSER', ''),

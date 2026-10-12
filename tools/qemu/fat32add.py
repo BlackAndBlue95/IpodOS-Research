@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add a folder of files to an existing FAT32 volume inside a disk image (the emulator's music volume:
-4096-byte sectors). Creates PARENT\\NAME with a long name and copies every file of SRC_DIR into it.
-Fails if PARENT\\NAME already exists.
+4096-byte sectors). Creates PARENT\\NAME with a long name and copies every file of SRC_DIR into it (fails if it
+already exists). NAME '-' copies the files straight into PARENT instead.
 
     fat32add.py IMAGE VOLUME_OFFSET 'FLAC' 'Fonts' SRC_DIR"""
 import os, struct, sys, time
@@ -105,14 +105,18 @@ pc = root
 for p in parent.split('\\'):
     pc = find(pc, p)
     if pc is None: raise SystemExit('no folder ' + p)
-if find(pc, name) is not None: raise SystemExit(name + ' exists')
-dc = alloc(1)[0]
-f.seek(coff(dc)); f.write(b'\0' * csize)
+if name == '-':
+    dc = pc
+else:
+    if find(pc, name) is not None: raise SystemExit(name + ' exists')
+    dc = alloc(1)[0]
 tm, dt = dos_dt()
-dot = b'.          ' + bytes([0x10, 0, 0]) + struct.pack('<HHHHHHHI', tm, dt, dt, dc >> 16, tm, dt, dc & 0xffff, 0)
-dotdot = b'..         ' + bytes([0x10, 0, 0]) + struct.pack('<HHHHHHHI', tm, dt, dt, (pc if pc != root else 0) >> 16, tm, dt, (pc if pc != root else 0) & 0xffff, 0)
-f.seek(coff(dc)); f.write(dot + dotdot)
-add_entries(pc, entries(name, short(name), 0x10, dc, 0))
+if name != '-':
+    f.seek(coff(dc)); f.write(b'\0' * csize)
+    dot = b'.          ' + bytes([0x10, 0, 0]) + struct.pack('<HHHHHHHI', tm, dt, dt, dc >> 16, tm, dt, dc & 0xffff, 0)
+    dotdot = b'..         ' + bytes([0x10, 0, 0]) + struct.pack('<HHHHHHHI', tm, dt, dt, (pc if pc != root else 0) >> 16, tm, dt, (pc if pc != root else 0) & 0xffff, 0)
+    f.seek(coff(dc)); f.write(dot + dotdot)
+    add_entries(pc, entries(name, short(name), 0x10, dc, 0))
 for fn in sorted(os.listdir(src)):
     path = os.path.join(src, fn)
     if fn.startswith('.') or not os.path.isfile(path): continue

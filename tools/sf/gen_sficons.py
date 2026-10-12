@@ -144,6 +144,12 @@ for s, f in (('2s', 2), ('5s', 5), ('10s', 10), ('20s', 20), ('30s', 30)):
     SPECIAL['Settings_Backlight_%s_Image' % s] = ('pie', f / 30)
 for k in range(1, 36, 2):
     SPECIAL['DiskModeImage_SyncArrow%d' % k] = ('rot', (k - 1) // 2 * 10)
+# Now Playing's playback bar, Apple Music style: a thin track, the fill in the accent, a round knob
+SPECIAL['NowPlaying_ProgressBar_Inactive_Background_Image'] = ('band', (255, 255, 255), 0.3)
+SPECIAL['NowPlaying_ProgressBar_Active_Background_Image'] = ('band', (255, 255, 255), 0.3)
+SPECIAL['NowPlaying_ProgressBar_Inactive_Fill_Image'] = ('band', (0, 122, 255), 1.0)
+SPECIAL['NowPlaying_ProgressBar_Active_Fill_Image'] = ('band', (0, 122, 255), 1.0)
+SPECIAL['NowPlaying_ProgressBar_Scrub_Image'] = ('knob', (255, 255, 255), 1.0)
 
 ACCENT = set()                                   # images that take the accent colour at boot
 RECODE = set()                                   # alpha masks stored as 8-bit palette images instead
@@ -246,6 +252,14 @@ def build(name, pass2):
         if fw > 0.3:
             fill = (255, 59, 48) if sp[1] <= 0.2 and not two else col
             layers.append((ss_mask(w, h, rrect(x0 + g, y0 + g, fw, bh - 2 * g, min(max(r - g, 0.5), fw / 2))), fill, 1.0))
+    elif sp and sp[0] == 'band':                     # rows 5..8 of the 14-row bar, no reflection
+        ACCENT.add(pid)
+        layers.append(([1.0 if 5 <= i // w <= 8 else 0.0 for i in range(w * h)], sp[1], sp[2]))
+    elif sp and sp[0] == 'knob':
+        import math
+        ACCENT.add(pid)
+        cx, cy, R = (w - 1) / 2, 6.5, 5.5
+        layers.append((ss_mask(w, h, lambda x, y: math.hypot(x - 0.5 - cx, y - 0.5 - cy) <= R), sp[1], sp[2]))
     elif sp and sp[0] == 'pie':
         if fmt in (4, 8):                           # Settings previews: bigger, an accent image (see recode)
             box = (5, 5, 68, 68); col = (0, 122, 255); ACCENT.add(pid); RECODE.add(pid)

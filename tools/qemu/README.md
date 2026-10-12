@@ -11,3 +11,6 @@ Build: clone the fork into `build/qemu/src`, apply the patch, get glib/pixman/op
 micromamba into `build/qemu/deps`, then `../configure --target-list=arm-softmmu --enable-sdl` and
 `ninja qemu-system-arm` (about a minute). Disk: `mkdisk7g.py <out> <firmware partition dump> <FAT32 image>`.
 Keys: q/e wheel, Enter select, w menu, a/d prev/next, s play.
+
+Now Playing needs the display compositor of [joelheaps/qemu-ipod-classic](https://github.com/joelheaps/qemu-ipod-classic)
+(same base as the fork above; `ipod-classic-7g.patch` applies to it too). The other screens work with either.

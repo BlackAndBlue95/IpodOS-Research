@@ -393,12 +393,18 @@ __attribute__((used, noinline, section(".text.entry"))) void e_art_clear(uint32_
     os_clear_colour(theme_pal_white[0] * 0x10000u / 255, theme_pal_white[1] * 0x10000u / 255, theme_pal_white[2] * 0x10000u / 255, a);
 }
 
-/* Modern style has no mirror reflection. The cover render (0x082706d0) draws the reflection mesh
-   only when cover+0x94 holds a reflection texture. The load at 0x08270980 is now `bl e_refl_gate`,
-   which returns that texture in r0, or 0 in Modern style (r4 = cover; ip is scratch, lr is dead). */
-__attribute__((naked, section(".text.entry"), used)) void e_refl_gate(void)
+/* Modern style has no mirror reflection. The cover render (0x082706d0) computes the reflection's
+   four corners every frame and hands them to 0x083c89b0(mesh, vertices, 4, 3) at 0x08270adc; that
+   call now comes here. In Modern the four corners (16.16 x, y, z, 12 bytes apart) are collapsed onto
+   the first, so the reflection is a zero-area quad and draws nothing. Skipping the reflection
+   block instead leaves the mesh with the corners of an earlier, angled frame. */
+#define os_mesh_set_vertices ((void (*)(void *, int32_t *, int, int))0x083c89b0)
+__attribute__((used, section(".text.entry"))) void e_refl_verts(void *mesh, int32_t *v, int n, int k)
 {
-    __asm__ volatile("ldr r0, [r4, #0x94]\n ldr ip, 1f\n ldr ip, [ip]\n cmp ip, #0\n movne r0, #0\n bx lr\n 1: .word theme_style\n");
+    int i, j;
+    if (theme_style && n > 0 && k > 0 && k <= 4)
+        for (i = 1; i < n; i++) for (j = 0; j < k; j++) v[i * k + j] = v[j];
+    os_mesh_set_vertices(mesh, v, n, k);
 }
 
 /* The selection bar's bottom row and bottom edge store red from a zero register (0x08261ef4,
@@ -650,6 +656,22 @@ static void remap_view(uint8_t *view)
     remap_colour(c);
     if (walk_mode && c[3] && tr_lum(c[0], c[1], c[2]) >= 200) light_left++;
 }
+/* Modern: Now Playing's song title (scrolling text, string 0x7f01) in the accent. The stored
+   colour (+0xf4) feeds the ink each time the title's mask is rebuilt (e_marq_ink); the canvas tints
+   are set too for the mask already on screen. Called from the walk and from every marquee draw
+   (marq_c, e_marq_ink): on the iPod Now Playing is built in the background, after the walk. */
+static void np_title_accent(uint8_t *view, int accent)
+{
+    const uint8_t *a;
+    uint32_t nl, i;
+    uint8_t *t[10];
+    if (!theme_style || rd32(view) != 0x0898b884 || rd32(view + 0x44) != 0x00007f01 || !(rd32(view + 0xf0) & 0x800)) return;
+    a = accents[accent < 0 || accent >= NACCENT ? 0 : accent];
+    nl = rd32(view + 0x244);
+    t[0] = view + 0xf4; t[1] = view + 0xa4 + 0x11;
+    for (i = 0; i < nl && i < 8; i++) t[2 + i] = view + 0x248 + 108 * i + 12 + 0x11;
+    for (i = 0; i < 2 + (nl < 8 ? nl : 8); i++) { t[i][0] = a[0]; t[i][1] = a[1]; t[i][2] = a[2]; }
+}
 static void walk_view(uint8_t *view, int depth)
 {
     uint32_t iter[2];
@@ -676,6 +698,7 @@ static void walk_view(uint8_t *view, int depth)
         remap_text(view + 0xa4 + 0x11);
         for (i = 0; i < nl && i < 8; i++) remap_text(view + 0x248 + 108 * i + 12 + 0x11);
     }
+    np_title_accent(view, walk_accent);
     if (rd32(view + 0xa8) != children_vt) return;
     os_view_iter_init(iter, view + 0xa8);
     while (os_view_iter_next(iter, &child)) walk_view((uint8_t *)child, depth + 1);
@@ -751,7 +774,9 @@ static void __attribute__((used)) marq_c(uint32_t *r)
 {
     uint8_t *m = (uint8_t *)r[0];
     uint32_t n, i;
-    if (marq_logged >= 6 || !ptr_ok((uint32_t)m)) return;
+    if (!ptr_ok((uint32_t)m)) return;
+    np_title_accent(m, applied_accent);
+    if (marq_logged >= 6) return;
     n = rd32(m + 0x244);
     if (n < 1 || !rd32(m + 0x248 + 8)) return;              /* no scroll mask built: a plain draw */
     marq_logged++;
@@ -786,6 +811,7 @@ typedef void (*marq_text_t)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, ui
 E_ENTRY void e_marq_ink(uint32_t view, uint32_t canvas, uint32_t rect, uint32_t str, uint32_t s0, uint32_t s1, uint32_t s2, uint8_t *col)
 {
     uint8_t save[4], *t = (uint8_t *)canvas + 0x11;
+    if (ptr_ok(view)) np_title_accent((uint8_t *)view, applied_accent);
     save[0] = col[0]; save[1] = col[1]; save[2] = col[2]; save[3] = col[3];
     col[0] = col[1] = col[2] = 0; col[3] = 0xff;
     ((marq_text_t)0x081a8228)(view, canvas, rect, str, s0, s1, s2, col);
@@ -857,8 +883,15 @@ static void sf_apply(const uint8_t *acc, int modern)
     log_s("   theme: SF icons "); log_s(modern ? "on " : "off "); log_d(ok); log_s(", failed "); log_d(bad);
     log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");
 }
+static int sf_is_accent(uint32_t id)
+{
+    uint32_t j;
+    for (j = 0; j < SF_NACCENT; j++) if (sf_accent[j] == id) return 1;
+    return 0;
+}
 #else
 static void sf_apply(const uint8_t *acc, int modern) { (void)acc; (void)modern; }
+static int sf_is_accent(uint32_t id) { (void)id; return 0; }
 #endif
 
 /* List row separators: 1-pixel views whose colour is copied from 9 static templates in the OS
@@ -881,7 +914,6 @@ static void theme_separators(int mode)
    apply, so no pristine copy is needed; a style change restarts). The black status bar (About,
    USB, Now Playing) keeps light text, so it takes the dark page colour in Dark and near-black in
    Light; the About band a grey; capacity and progress bar pieces their own average colour. ---- */
-static const uint32_t modern_dark_bar[2] = { 0x0dad00f8, 0x0dad082e };   /* StatusBarBlack_Background, NowPlaying_StatusBar */
 static const uint32_t modern_mean[37] = {
     0x0dad0abc, 0x0dad0abb, 0x0dad0abd, 0x0dad0ab7, 0x0dad0ab9, 0x0dad0ab8, 0x0dad0aba, 0x0dad0ac5,
     0x0dad0ac4, 0x0dad0ac6, 0x0dad0ac2, 0x0dad0ac1, 0x0dad0ac3, 0x0dad0abf, 0x0dad0abe, 0x0dad0ac0,
@@ -923,6 +955,23 @@ static const uint32_t modern_panel[6] = { 0x0dad0141, 0x0dad0143, 0x0dad0142, 0x
 static const uint32_t modern_well[3]  = { 0x0dad0154, 0x0dad0153, 0x0dad0155 };
 static const uint32_t modern_thumb[3] = { 0x0dad0157, 0x0dad0156, 0x0dad0158 };
 static const uint32_t modern_field[3] = { 0x0dad0163, 0x0dad0165, 0x0dad0164 };
+/* Now Playing's option bar (shuffle, repeat... chosen with the centre button): a flat dark track
+   and an accent pill, like an iOS segmented control */
+static const uint32_t np_opt_well[3]  = { 0x0dad015a, 0x0dad0159, 0x0dad015b };
+static const uint32_t np_opt_thumb[3] = { 0x0dad015d, 0x0dad015c, 0x0dad015e };
+/* Its label colours are set in code (0x081df3c8: #252525, the selected one #0071C4, for a light
+   control); the two colour-set calls (0x08267210) come here. Modern: light labels on the dark track,
+   white on the accent pill. */
+E_ENTRY void e_opbar_ink(void *dst, uint8_t *rgba)
+{
+    uint8_t c[4];
+    c[0] = rgba[0]; c[1] = rgba[1]; c[2] = rgba[2]; c[3] = rgba[3];
+    if (theme_style) {
+        if (c[0] == 0x25 && c[1] == 0x25 && c[2] == 0x25) c[0] = c[1] = c[2] = 0xc8;
+        else c[0] = c[1] = c[2] = 0xff;
+    }
+    ((void (*)(void *, uint8_t *))0x08267210)(dst, c);
+}
 static void modern_bars(int mode, const uint8_t *acc)
 {
     static const uint8_t near_black[3] = { 28, 28, 30 }, band_dark[3] = { 44, 44, 46 }, band_light[3] = { 142, 142, 147 },
@@ -934,12 +983,36 @@ static void modern_bars(int mode, const uint8_t *acc)
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_well[i], &size))) bm_fill(d, size, well);
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_thumb[i], &size)) && acc) bm_fill(d, size, acc);
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_field[i], &size))) bm_fill(d, size, mode ? well : white);   /* typed text follows the theme */
+        if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_well[i], &size))) bm_fill(d, size, well);
+        if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_thumb[i], &size)) && acc) bm_fill(d, size, acc);
     }
-    for (i = 0; i < 2; i++)
-        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_dark_bar[i], &size))) bm_fill(d, size, mode ? theme_pal_white : near_black);
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad00f8, &size))) bm_fill(d, size, mode ? theme_pal_white : near_black);   /* StatusBarBlack_Background (About, USB) */
     if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad0aa9, &size))) bm_fill(d, size, mode ? band_dark : band_light);   /* Settings_About_Band */
     for (i = 0; modern_mean[i]; i++)
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_mean[i], &size)) && bm_mean(d, c)) bm_fill(d, size, c);
+}
+
+/* Modern style Now Playing layout, patched in Apple's own layout resources before the screens are
+   built: NowPlaying_Music_Background_Template (View 0x0dad088e: child records with left +8, top
+   +0x14, right inset +0x2c, horizontal alignment +0x80: 1 left, 2 right, 3 centre) and its Default
+   layout (VLyt 0x0dad089a: constraints 0x3e8 top, 0x3e9 left, 0x3eb right). The rating and the
+   track count move below the screen; title, artist and album stay beside the cover. Each word is
+   written only while it still holds Apple's value. */
+#define T_VIEW FOURCC('V', 'i', 'e', 'w')
+#define T_VLYT FOURCC('V', 'L', 'y', 't')
+static const struct { uint32_t type, id, off, old, now; } np_layout[] = {
+    { T_VIEW, 0x0dad088e, 0x490, 0x0000007d, 0x0000012c },
+    { T_VIEW, 0x0dad088e, 0x50c, 0x00000090, 0x0000012c },
+    { T_VLYT, 0x0dad089a, 0x160, 0x00000090, 0x0000012c }
+};
+static void modern_np_layout(void)
+{
+    uint32_t i, size;
+    uint8_t *d;
+    for (i = 0; i < sizeof np_layout / sizeof np_layout[0]; i++)
+        if ((d = (uint8_t *)pkg_find(np_layout[i].type, np_layout[i].id, &size)) && np_layout[i].off + 4 <= size &&
+            rd32(d + np_layout[i].off) == np_layout[i].old)
+            wr32(d + np_layout[i].off, np_layout[i].now);
 }
 
 /* ---- apply ---- */
@@ -962,13 +1035,15 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     apply_code_colours(mode, accent);
     sf_apply(acc, theme_style);
     theme_separators(mode);
-    if (theme_style) modern_bars(mode, acc);
+    if (theme_style) { modern_bars(mode, acc); modern_np_layout(); }
     for (i = 0; i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
         uint32_t id = cls == 0 ? theme_bmap_chrome[i] : cls == 1 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
                     : theme_bmap_accent[i - sizeof theme_bmap_chrome / 4 - sizeof theme_bmap_bg / 4];
-        const uint8_t *src = orig_of(T_BMAP, id, &size);
+        const uint8_t *src;
         uint8_t *d = 0;
+        if (theme_style && sf_is_accent(id)) continue;     /* Modern: sf_apply keeps these (accent images) */
+        src = orig_of(T_BMAP, id, &size);
         uint32_t key = 0x80000000u | (uint32_t)mode << 16 | (uint32_t)accent << 8 | (uint32_t)theme_style;
         if (!src) { bad++; continue; }
         /* the themed copy of each bitmap is kept: the second pass at UI init (the OS reloads the

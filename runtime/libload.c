@@ -189,3 +189,14 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 
 E_ENTRY void e_libload_boot(void *a0, void *a1, void *a2, void *a3) { libload(0, a0, a1, a2, a3); }
 E_ENTRY void e_libload_task(void *a0, void *a1, void *a2, void *a3) { libload(1, a0, a1, a2, a3); }
+
+/* Album artists. Apple's Artists menu groups by the artist string, so the sync writes the album
+ * artist there (libsync make_track) and keeps the song's own artist, when it differs, as the
+ * comment (string type 8, track record +0x4c), which nothing else shows. Apple's per-song artist
+ * text (Now Playing, song rows: 0x08298f3c) reads the artist with 0x0804a840 (record, string out);
+ * that call comes here and takes the comment first (0x0804a8d8, same form). */
+E_ENTRY void e_song_artist(uint8_t *track, void *out)
+{
+    if (*(uint32_t *)(track + 0x4c)) ((void (*)(void *, void *))0x0804a8d8)(track, out);
+    else ((void (*)(void *, void *))0x0804a840)(track, out);
+}

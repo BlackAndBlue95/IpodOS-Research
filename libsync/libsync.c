@@ -27,7 +27,7 @@
    generation, u32 reserved. Entries without the current marker are rebuilt once, keeping
    id, dbid, dates and play counts. */
 #define LS_MARK       0x258
-#define LS_VER        2
+#define LS_VER        4
 #define LS_F_FNTITLE  1             /* title taken from the file name */
 #define LS_F_NOALBUM  2
 #define LS_F_NOARTIST 4
@@ -800,7 +800,8 @@ static int match_renames(void)
             }
             if (!hit && !fromname)
                 hit = tag_eq(t, 1, title, titlen, u16) && tag_eq(t, 3, tg.v[T_ALBUM], tg.n[T_ALBUM], u16) &&
-                      tag_eq(t, 4, tg.v[T_ARTIST], tg.n[T_ARTIST], u16);
+                      tag_eq(t, 4, tg.n[T_ALBUMARTIST] ? tg.v[T_ALBUMARTIST] : tg.v[T_ARTIST],
+                             tg.n[T_ALBUMARTIST] ? tg.n[T_ALBUMARTIST] : tg.n[T_ARTIST], u16);
             if (hit) {
                 OT[rem[i]].used = 1;
                 F[f].old = rem[i];
@@ -874,7 +875,7 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
     uint32_t sr = 0, ms, kbps, aid = 0, n, hl = tmpl_hl;
     uint64_t ns = 0;
     const uint8_t *title, *aa;
-    int titlen, aan, yl, fromname;
+    int titlen, aan, yl, fromname, own;
     uint8_t *h, *q;
     union { float f; uint32_t u; } fsr;
     struct trk *t = &T[NT];
@@ -894,9 +895,12 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
     n = mhod_len(u8to16(title, titlen, NULL, 0))
       + mhod_len(u8to16((const uint8_t *)f->path, (int)LS_STRLEN(f->path), NULL, 0))
       + mhod_len(30);
+    own = tg.n[T_ARTIST] && (tg.n[T_ARTIST] != aan || LS_MEMCMP(tg.v[T_ARTIST], aa, aan));
     for (int j = 0; j < NTAGS; j++)
-        if ((j == T_ALBUM || j == T_ARTIST || j == T_GENRE || j == T_COMPOSER || j == T_ALBUMARTIST) && tg.n[j])
+        if ((j == T_ALBUM || j == T_GENRE || j == T_COMPOSER) && tg.n[j])
             n += mhod_len(u8to16(tg.v[j], tg.n[j], NULL, 0));
+    if (aan) n += 2 * mhod_len(u8to16(aa, aan, NULL, 0));
+    if (own) n += mhod_len(u8to16(tg.v[T_ARTIST], tg.n[T_ARTIST], NULL, 0));
     NEW(h, hl + n);
     LS_MEMSET(h, 0, hl);
 
@@ -956,15 +960,20 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
         if (fl & LS_F_NOALBUM) R->noalbum++;
     }
 
-    /* Strings in Finder's order: title, artist, album artist, composer, album, genre, type, location. */
+    /* Strings in Finder's order: title, artist, album artist, composer, album, genre, comment, type,
+       location. The OS lists Artists by the artist string, so it holds the album artist (the
+       song's artist when there is none): a song with guests stays under the album's artist. The
+       song's own artist, when it differs, is the comment, which Now Playing and song rows show
+       (e_song_artist in runtime/libload.c). */
     q = h + hl;
     q = put_mhod(q, 1, title, titlen, 0);
     n = 1;
-    if (tg.n[T_ARTIST])      { q = put_mhod(q, 4, tg.v[T_ARTIST], tg.n[T_ARTIST], 0); n++; }
-    if (tg.n[T_ALBUMARTIST]) { q = put_mhod(q, 22, tg.v[T_ALBUMARTIST], tg.n[T_ALBUMARTIST], 0); n++; }
+    if (aan)                 { q = put_mhod(q, 4, aa, aan, 0); n++; }
+    if (aan)                 { q = put_mhod(q, 22, aa, aan, 0); n++; }
     if (tg.n[T_COMPOSER])    { q = put_mhod(q, 12, tg.v[T_COMPOSER], tg.n[T_COMPOSER], 0); n++; }
     if (tg.n[T_ALBUM])       { q = put_mhod(q, 3, tg.v[T_ALBUM], tg.n[T_ALBUM], 0); n++; }
     if (tg.n[T_GENRE])       { q = put_mhod(q, 5, tg.v[T_GENRE], tg.n[T_GENRE], 0); n++; }
+    if (own)                 { q = put_mhod(q, 8, tg.v[T_ARTIST], tg.n[T_ARTIST], 0); n++; }
     q = put_mhod(q, 6, (const uint8_t *)"FLAC audio file", 15, 0); n++;
     q = put_mhod(q, 2, (const uint8_t *)f->path, (int)LS_STRLEN(f->path), 1); n++;
     p32(h + 8, (uint32_t)(q - h));
@@ -1519,7 +1528,7 @@ int ls_verify(const uint8_t *db, uint32_t len, const uint8_t fwid[8], int marker
                     VF(q + 40 > p + ttl || LS_MEMCMP(db + q, "mhod", 4), "string record header", q);
                     ml = g32(db + q + 8); mt = g32(db + q + 12);
                     VF(ml < 24 || ml > p + ttl - q, "string record length", q);
-                    if (mt == 1 || mt == 2 || mt == 3 || mt == 4 || mt == 5 || mt == 6 || mt == 12 || mt == 22)
+                    if (mt == 1 || mt == 2 || mt == 3 || mt == 4 || mt == 5 || mt == 6 || mt == 8 || mt == 12 || mt == 22)
                         VF(ml < 40 || 40 + g32(db + q + 28) > ml, "string length", q);
                     if (mt == 1) ntitle++;
                     if (mt == 2) nloc++;
