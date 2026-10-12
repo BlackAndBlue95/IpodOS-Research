@@ -60,7 +60,7 @@ static void rect(int x, int y, int w, int h, uint16_t c)
     con(saved);
 }
 
-/* A boot progress bar drawn this way (R26) broke the display on the iPod: Apple's frame engine
+/* A boot progress bar drawn this way broke the display on the iPod: Apple's frame engine
    already streams frames there after UI init, and window commands sent then corrupt the screen
    and crash the OS. The LCD interface must not be touched once Apple's display is up. */
 

@@ -23,7 +23,7 @@ fatb = bytearray(open(fat, 'rb').read())
 def mark_fat_volume(fatb):
     """Make the retailOS accept the data partition as a FAT volume.
 
-    Measured (wiki/13, 2026-08-12): the firmware's generic volume classifier
+    Measured: the firmware's generic volume classifier
     0x0808253c reads block 0 of the partition, sees the 0x55AA at +0x1FE that
     every FAT boot sector carries, and hands it to the "sector with 0xAA55"
     handler 0x0806a128 -- i.e. it treats the FAT boot sector as if it might be

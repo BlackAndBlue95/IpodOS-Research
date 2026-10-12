@@ -801,7 +801,7 @@ static int fd_decode_next(FD *d)
             if (ok) break;
             if (++tries >= 32) {   /* nothing decodes: a block of silence keeps the player moving */
                 n = (d->st.maxbs ? d->st.maxbs : 4096) / d->dec; if (n > CHUNK) n = CHUNK;
-                if (!d->pcm && !fd_alloc(d, n, 2, d->och)) return -1;
+                if (!fd_alloc(d, n, 2, d->och)) return -1;   /* also when a smaller buffer is left from the last track */
                 memset(d->pcm, 0, n * d->och * 2);
                 d->pend_n = n; d->pend_pos = 0;
                 d->pend_out = d->next_sample / d->dec;

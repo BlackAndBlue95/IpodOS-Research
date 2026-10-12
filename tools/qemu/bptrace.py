@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Log hits of code breakpoints between two guest times: time, pc, r0-r3, lr, sp words and the
 bytes at r0-r3 when they point into RAM (strings).
-    bptrace.py PORT T0_MS T1_MS ADDR_HEX[,ADDR_HEX...] [MAXHITS]"""
+    bptrace.py PORT T0_MS T1_MS ADDR_HEX[,ADDR_HEX...] [MAXHITS]   (w:ADDR / r:ADDR: write / read watchpoints)"""
 import socket, struct, sys, time
 port, t0, t1 = int(sys.argv[1]), int(sys.argv[2]) * 1000, int(sys.argv[3]) * 1000
-bps = [int(x[2:], 16) if x.startswith('w:') else int(x, 16) for x in sys.argv[4].split(',')]
-kinds = [b'2' if x.startswith('w:') else b'0' for x in sys.argv[4].split(',')]
+bps = [int(x[2:], 16) if x[1:2] == ':' else int(x, 16) for x in sys.argv[4].split(',')]
+kinds = [b'2' if x.startswith('w:') else b'3' if x.startswith('r:') else b'0' for x in sys.argv[4].split(',')]
 maxhits = int(sys.argv[5]) if len(sys.argv) > 5 else 5000
 import os
 DEREF = os.environ.get('DEREF') == '1'

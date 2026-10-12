@@ -390,9 +390,6 @@ static void *art_find(void *lib, uint8_t *track)
     for (d = n; d > 0 && path[d - 1] != '\\'; d--);
     { Cov *c = find_cover(path, d); blk = c ? (c->nat ? c->nat : c->blk) : 0;
       if (art_log < 16) { art_log++; log_s("   art: find "); log_name(path);
-#ifdef ART_IDS
-        log_s(" id "); log_x(*(uint32_t *)(track + 0x110), 8); log_c(' '); log_x(*(uint32_t *)(track + 0x114), 8);
-#endif
         log_s(c ? (blk == (uint32_t *)c->nat && c->nat ? " -> covers.db\n" : (blk ? " -> jpeg\n" : " -> no cover\n")) : " -> no album\n"); } }
     if (!blk) { TR(54)++; return 0; }
     (void)cov; (void)cl;
@@ -793,6 +790,8 @@ __attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32
 {
     static uint16_t src[NP_SIDE * NP_SIDE];
     static uint32_t src_sum;
+    static int bg_gen = -1;
+    extern int theme_gen;
     const uint16_t *wh = (const uint16_t *)(t + 1);
     int x, y, i;
     uint32_t sum = 0;
@@ -801,7 +800,7 @@ __attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32
         for (y = 0; y < NP_SIDE; y++)                   /* the cover as Apple drew it */
             memcpy(src + y * NP_SIDE, buf + (NP_Y + y) * 320 + NP_X, NP_SIDE * 2);
         for (i = 0; i < NP_SIDE * NP_SIDE; i += 97) sum = sum * 31 + src[i];
-        if (!np_bg || sum != src_sum) { np_make_bg((const uint8_t *)src); src_sum = sum; }
+        if (!np_bg || sum != src_sum || bg_gen != theme_gen) { np_make_bg((const uint8_t *)src); src_sum = sum; bg_gen = theme_gen; }   /* its top fades into the bar colour */
         if (np_bg) memcpy(buf, np_bg, 320 * 240 * 2);
         for (y = 0; y < NP_SIDE; y++) {                 /* the cover, corners rounded over the background */
             uint16_t *d = buf + (NP_Y + y) * 320 + NP_X;

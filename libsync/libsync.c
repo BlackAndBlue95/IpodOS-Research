@@ -799,9 +799,12 @@ static int match_renames(void)
                 hit = on - ks == kn && u16ieq(kb2 + ks, kb, kn);
             }
             if (!hit && !fromname)
+                /* the artist string is the album artist (or, in entries from before version 3,
+                   the song's own artist) */
                 hit = tag_eq(t, 1, title, titlen, u16) && tag_eq(t, 3, tg.v[T_ALBUM], tg.n[T_ALBUM], u16) &&
-                      tag_eq(t, 4, tg.n[T_ALBUMARTIST] ? tg.v[T_ALBUMARTIST] : tg.v[T_ARTIST],
-                             tg.n[T_ALBUMARTIST] ? tg.n[T_ALBUMARTIST] : tg.n[T_ARTIST], u16);
+                      (tag_eq(t, 4, tg.n[T_ALBUMARTIST] ? tg.v[T_ALBUMARTIST] : tg.v[T_ARTIST],
+                              tg.n[T_ALBUMARTIST] ? tg.n[T_ALBUMARTIST] : tg.n[T_ARTIST], u16) ||
+                       tag_eq(t, 4, tg.v[T_ARTIST], tg.n[T_ARTIST], u16));
             if (hit) {
                 OT[rem[i]].used = 1;
                 F[f].old = rem[i];

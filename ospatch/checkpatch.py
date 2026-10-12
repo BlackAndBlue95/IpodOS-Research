@@ -92,6 +92,7 @@ if full:
     br(0x08261ef4, 'e_hl_bottom_r')
     br(0x08261f24, 'e_hl_edge_r')
     br(0x08270adc, 'e_refl_verts')
+    br(0x08193444, 'e_batt_index')
     br(0x08298f80, 'e_song_artist')
     br(0x081df3ec, 'e_opbar_ink')
     br(0x081df414, 'e_opbar_ink')

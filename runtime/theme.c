@@ -109,7 +109,7 @@ int theme_rsrc_set(uint32_t type, uint32_t id, const void *data, uint32_t size)
    The OS's resource source here is kind 2, which the override insert refuses, so the theme
    writes straight into the package data in RAM. */
 struct saved { uint32_t type, id, size; uint8_t *copy; };
-static struct saved saved[160];
+static struct saved saved[256];
 static int nsaved;
 static const uint8_t *orig_of(uint32_t type, uint32_t id, uint32_t *size)
 {
@@ -326,18 +326,18 @@ static void apply_code_colours(int mode, int accent)
         theme_hl_r[0] = bottom[0]; theme_hl_r[1] = eb[0];        /* the red channels, via e_hl_bottom_r / e_hl_edge_r */
         patch_mov_imm(hl1_edge_bottom_gb[0], eb[1]); patch_mov_imm(hl1_edge_bottom_gb[1], eb[2]);
     }
-    /* the text renderer's emboss pass (0x08286b18, flag 0x1000 text such as the Now Playing title)
-       is drawn first in a fixed light grey (mov r0, #0xdd at 0x08286b4c). In Dark that shows as a
-       light block behind the title, so it takes the page grey. */
-    patch_mov_imm(0x08286b4c, mode ? theme_pal_white[0] : 0xdd);
-    icache_sync();
-    /* the five greys: backgrounds and frames */
+    /* the five greys: backgrounds and frames (first: the emboss grey below is the page grey) */
     static const uint8_t stock[5] = { 0xff, 0xaa, 0x7f, 0x55, 0x00 };
     uint8_t *pal[5] = { theme_pal_white, theme_pal_aa, theme_pal_7f, theme_pal_55, theme_pal_black };
     for (i = 0; i < 5; i++) {
         if (mode) { tr_gray_px(stock[i], o); pal[i][0] = o[0]; pal[i][1] = o[1]; pal[i][2] = o[2]; }
         else pal[i][0] = pal[i][1] = pal[i][2] = stock[i];
     }
+    /* the text renderer's emboss pass (0x08286b18, flag 0x1000 text such as the Now Playing title)
+       is drawn first in a fixed light grey (mov r0, #0xdd at 0x08286b4c). In Dark that shows as a
+       light block behind the title, so it takes the page grey. */
+    patch_mov_imm(0x08286b4c, mode ? theme_pal_white[0] : 0xdd);
+    icache_sync();
     /* black fills stay black in both themes (Now Playing video, photos); black text is theme_text */
     theme_pal_black[0] = theme_pal_black[1] = theme_pal_black[2] = 0;
     if (mode) { tr_gray_px(0, o); theme_text[0] = o[0]; theme_text[1] = o[1]; theme_text[2] = o[2]; }
@@ -910,8 +910,8 @@ static void theme_separators(int mode)
     }
 }
 
-/* ---- Modern style: the remaining glossy bars go flat, in place (each fill is the same on every
-   apply, so no pristine copy is needed; a style change restarts). The black status bar (About,
+/* ---- Modern style: the remaining glossy bars go flat, in place. The stock bitmap is saved first
+   (orig_of), so switching back to Classic writes it back (classic_bars). The black status bar (About,
    USB, Now Playing) keeps light text, so it takes the dark page colour in Dark and near-black in
    Light; the About band a grey; capacity and progress bar pieces their own average colour. ---- */
 static const uint32_t modern_mean[37] = {
@@ -972,12 +972,31 @@ E_ENTRY void e_opbar_ink(void *dst, uint8_t *rgba)
     }
     ((void (*)(void *, uint8_t *))0x08267210)(dst, c);
 }
+/* every bitmap modern_bars fills, for the save before the first fill and the way back */
+static void for_each_modern_bar(void (*fn)(uint32_t id))
+{
+    static const uint32_t single[2] = { 0x0dad00f8, 0x0dad0aa9 };   /* StatusBarBlack_Background, Settings_About_Band */
+    uint32_t i;
+    for (i = 0; i < 6; i++) fn(modern_panel[i]);
+    for (i = 0; i < 3; i++) { fn(modern_well[i]); fn(modern_thumb[i]); fn(modern_field[i]); fn(np_opt_well[i]); fn(np_opt_thumb[i]); }
+    for (i = 0; i < 2; i++) fn(single[i]);
+    for (i = 0; modern_mean[i]; i++) fn(modern_mean[i]);
+}
+static void save_stock(uint32_t id) { uint32_t size; orig_of(T_BMAP, id, &size); }
+static void restore_stock(uint32_t id)
+{
+    int i;
+    for (i = 0; i < nsaved; i++)                          /* only what a Modern apply saved, and so changed */
+        if (saved[i].type == T_BMAP && saved[i].id == id) { rsrc_write(T_BMAP, id, saved[i].copy, saved[i].size); return; }
+}
+static void classic_bars(void) { for_each_modern_bar(restore_stock); }
 static void modern_bars(int mode, const uint8_t *acc)
 {
     static const uint8_t near_black[3] = { 28, 28, 30 }, band_dark[3] = { 44, 44, 46 }, band_light[3] = { 142, 142, 147 },
                          well[3] = { 58, 58, 60 }, white[3] = { 255, 255, 255 };
     uint32_t i, size;
     uint8_t *d, c[3];
+    for_each_modern_bar(save_stock);
     for (i = 0; i < 6; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, modern_panel[i], &size))) bm_fill(d, size, band_dark);
     for (i = 0; i < 3; i++) {
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_well[i], &size))) bm_fill(d, size, well);
@@ -997,7 +1016,7 @@ static void modern_bars(int mode, const uint8_t *acc)
    +0x14, right inset +0x2c, horizontal alignment +0x80: 1 left, 2 right, 3 centre) and its Default
    layout (VLyt 0x0dad089a: constraints 0x3e8 top, 0x3e9 left, 0x3eb right). The rating and the
    track count move below the screen; title, artist and album stay beside the cover. Each word is
-   written only while it still holds Apple's value. */
+   written only while it still holds the other style's value, and Classic puts Apple's back. */
 #define T_VIEW FOURCC('V', 'i', 'e', 'w')
 #define T_VLYT FOURCC('V', 'L', 'y', 't')
 static const struct { uint32_t type, id, off, old, now; } np_layout[] = {
@@ -1005,14 +1024,17 @@ static const struct { uint32_t type, id, off, old, now; } np_layout[] = {
     { T_VIEW, 0x0dad088e, 0x50c, 0x00000090, 0x0000012c },
     { T_VLYT, 0x0dad089a, 0x160, 0x00000090, 0x0000012c }
 };
-static void modern_np_layout(void)
+static void modern_np_layout(int modern)
 {
-    uint32_t i, size;
+    uint32_t i, size, from, to;
     uint8_t *d;
-    for (i = 0; i < sizeof np_layout / sizeof np_layout[0]; i++)
+    for (i = 0; i < sizeof np_layout / sizeof np_layout[0]; i++) {
+        from = modern ? np_layout[i].old : np_layout[i].now;
+        to = modern ? np_layout[i].now : np_layout[i].old;
         if ((d = (uint8_t *)pkg_find(np_layout[i].type, np_layout[i].id, &size)) && np_layout[i].off + 4 <= size &&
-            rd32(d + np_layout[i].off) == np_layout[i].old)
-            wr32(d + np_layout[i].off, np_layout[i].now);
+            rd32(d + np_layout[i].off) == from)
+            wr32(d + np_layout[i].off, to);
+    }
 }
 
 /* ---- apply ---- */
@@ -1020,6 +1042,10 @@ int theme_is_applied(int mode, int accent) { return applied_mode == mode && appl
 #define BMCACHE 160
 static uint8_t *bmcache[BMCACHE];
 static uint32_t bmcache_key[BMCACHE];
+/* a resource bitmap as currently applied (battery.c draws into two of them); theme_gen counts the
+   applies, after which they hold their pristine pixels again */
+int theme_gen;
+const uint8_t *theme_bitmap(uint32_t id, uint32_t *size) { return pkg_find(T_BMAP, id, size); }
 int theme_apply(int mode, int accent, int rebuild_ui)
 {
     const uint8_t *acc;
@@ -1029,13 +1055,15 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     uint32_t t0 = TIMER_E;
     if (accent < 0 || accent >= NACCENT) accent = 0;
     acc = accents[accent];
+    theme_gen++;
     /* the palette first: Modern flattens bars and pages to theme_pal_white while the bitmaps are
        themed. Computed after them, the first apply flattened them to the previous (white) value,
        and views built from those resources kept a white status bar and page */
     apply_code_colours(mode, accent);
     sf_apply(acc, theme_style);
     theme_separators(mode);
-    if (theme_style) { modern_bars(mode, acc); modern_np_layout(); }
+    if (theme_style) { modern_bars(mode, acc); modern_np_layout(1); }
+    else { classic_bars(); modern_np_layout(0); }
     for (i = 0; i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
         uint32_t id = cls == 0 ? theme_bmap_chrome[i] : cls == 1 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
@@ -1087,6 +1115,7 @@ int theme_apply(int mode, int accent, int rebuild_ui)
         if (src && size >= 4) { v = rd32(src); if (rsrc_write(T_COLR, 0x0dad009d, &v, 4)) bad++; else done++; }
     }
     theme_named(mode, accent, acc);
+    { void battery_redraw(void); battery_redraw(); }   /* its two images just got their stock pixels back */
     applied_mode = mode; applied_accent = accent;
     log_s("   theme: "); log_s(mode ? "dark, accent " : "light"); if (mode) log_s(accent_names[accent]);
     log_s(", resources patched "); log_d(done); log_s(", failed "); log_d(bad); log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");

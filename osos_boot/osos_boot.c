@@ -45,10 +45,9 @@ static const uint32_t canary_at[3] = { 0x2203c0fc, 0x2203f800, 0x2201fff0 };
 
 static int line;
 
-/* v12b: no clock or voltage changes, the OS gets the clocks Rockbox has
-   at the jump, as with v8, the last version that booted. v10/v11 boosted
-   for the load and forced 54/54/27 before the jump; on rockpod, which was
-   already at 216/108/54 (CLKCON1 0x00404101), the OS then died at start. */
+/* No clock or voltage changes: the OS gets the clocks Rockbox has at the jump. Boosting for
+   the load and forcing 54/54/27 before the jump made the OS die at start on rockpod, which is
+   already at 216/108/54 (CLKCON1 0x00404101). */
 static uint8_t sysinfo[SYSINFO_SZ] __attribute__((aligned(4)));
 
 static void say(const char *fmt, ...)
@@ -374,9 +373,9 @@ enum plugin_status plugin_start(const void *parameter)
     if (build_sysinfo(sysinfo) < 0)
         goto wait_exit;
     rb->audio_stop();
-    /* v12d: audio_stop only queues the stop; the playback thread may still be streaming from
-       the disk. Wait until it is idle: jumping mid-transfer left the OS's first reads of the
-       root folder shifted by 16 bytes (2026-10-07, root folder destroyed). */
+    /* audio_stop only queues the stop; the playback thread may still be streaming from the
+       disk. Wait until it is idle: jumping mid-transfer leaves the OS's first reads of the root
+       folder shifted by 16 bytes, and the root folder was once destroyed that way. */
     for (int i = 0; i < 50 && rb->audio_status(); i++)
         rb->sleep(HZ / 10);
     say(rb->audio_status() ? "Playback still busy!" : "Playback stopped");
@@ -497,7 +496,7 @@ enum plugin_status plugin_start(const void *parameter)
     }
 
 boot:
-    /* v12d: always flush the drive's write cache and let it settle before the OS takes it over
+    /* always flush the drive's write cache and let it settle before the OS takes it over
        (Rockbox flushes only when the drive sleeps, at shutdown and at ROLO) */
     rb->storage_sleep();
     rb->sleep(HZ / 2);

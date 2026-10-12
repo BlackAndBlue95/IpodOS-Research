@@ -319,9 +319,10 @@ static int walk_entries(const uint8_t *d, uint32_t len, visit_fn v, void *ctx)
 static int load_dir(uint32_t cl, uint8_t **out, uint32_t *len)
 {
     uint32_t cap = V.clbytes, n = 0, c = cl, guard = 0;
-    uint8_t *buf = amalloc(cap), *nb;
-    if (!buf) return -1;
-    while (c >= 2 && c < 0x0ffffff8) {
+    uint8_t *buf, *nb;
+    if (c < 2 || c - 2 >= V.nclus) return -1;
+    if (!(buf = amalloc(cap))) return -1;
+    while (c < 0x0ffffff8) {
         if (n + V.clbytes > cap) {
             if (cap >= DCMAX) { afree(buf); return -1; }
             cap *= 2;
@@ -335,7 +336,9 @@ static int load_dir(uint32_t cl, uint8_t **out, uint32_t *len)
         for (uint32_t o = n - V.clbytes; o < n; o += 32) if (buf[o] == 0) { *out = buf; *len = n; return 0; }
         if (++guard > DCMAX / V.clbytes) { afree(buf); return -1; }
         c = next_cluster(c);
-        if (c == 1) { afree(buf); return -1; }
+        /* a free (0) or bad (0x0ffffff7) entry, a read error (1) or a cluster past the volume in
+           the middle of a chain: the folder can't be read whole, so the OS lists it instead */
+        if (c < 0x0ffffff8 && (c < 2 || c - 2 >= V.nclus)) { afree(buf); return -1; }
     }
     *out = buf; *len = n;
     return 0;

@@ -16,12 +16,7 @@ void artdb_update(void);
 int e_debug;                       /* FLAC\debug.txt exists: decoder trace logs (flac_dump) */
 
 static int loads;
-static int deferred;               /* the boot skipped the library load; the first frame starts it */
 static int mikey_pending;
-
-#define os_mount_music  ((void (*)(void))0x08058584)   /* mounts volume 0, registers the rsrc volume (both idempotent) */
-#define os_music_app    ((void *(*)(int))0x0817d524)
-#define os_start_reload ((void (*)(void *))0x08107d44)  /* creates and starts TMusicLoadingTask, as after disk mode */
 
 static void mikey_events(void)
 {
@@ -30,52 +25,6 @@ static void mikey_events(void)
     log_s("   accessory: plug change posted, attention in 2 s\n");
 }
 
-#ifdef DEFER_LIBLOAD
-/* Boot: everything the UI needs, but not the library. Apple's boot load blocks the main menu for
- * the sync and the whole load; the menu appears first and the library loads behind it in the
- * OS's own loading task, the same path as the reload after disk mode. */
-static void boot_without_library(void)
-{
-    int rc;
-    uint32_t t;
-    log_s("== boot, region E "); log_x((uint32_t)__e_start, 8); log_c('-'); log_x((uint32_t)__e_end, 8);
-    log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms"); log_s(e_debug ? ", debug\n" : "\n");
-    path_new_library();
-    art_new_library();
-    ((void (*)(void))0x080e9ce4)();      /* headset chip init; its plug events follow the library load */
-    mikey_pending = 1;
-    t = TIMER_E;
-    rc = os_vol_mount(0);
-    os_mount_music();
-    log_s("   mount: volume 0 rc "); log_d(rc); log_s(" ("); log_d((int)(TIMER_E - t)); log_s(" us)\n");
-    settings_boot(1);
-    { void update_check(void); update_check(); }
-#ifdef DEFER_START_AT_BOOT
-    deferred = 2;
-    log_s("   library: loading in the background task from boot\n");
-    log_t(1);
-    log_flush();
-    os_start_reload(os_music_app(0));
-#else
-    deferred = 1;
-    log_s("   library: load deferred until the first frame\n");
-    log_t(1);
-    log_flush();
-#endif
-}
-
-/* render pass hook: the menu is on screen */
-void libload_first_frame(void)
-{
-    if (deferred != 1) return;
-    deferred = 2;
-    log_t(2);
-    log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms, starting the library load\n");
-    os_start_reload(os_music_app(0));
-}
-
-
-#else
 /* render pass hook: the first frame on screen is the end of the boot */
 void libload_first_frame(void)
 {
@@ -83,29 +32,15 @@ void libload_first_frame(void)
     if (seen) return;
     seen = 1;
     log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
-    { void uifast_first_frame(void); uifast_first_frame(); }
     { void rc_stop(void); rc_stop(); }
 #ifdef PROF_UI
     { void prof_mark(const char *); void prof_stop(int); prof_mark("first frame"); prof_stop(1); }
 #endif
     log_flush();
 }
-#endif
 
 static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 {
-#ifdef DEFER_LIBLOAD
-    if (!task && !loads) {
-        int sz;
-        e_debug = file_read("FLAC\\debug.txt", 0, 0, &sz) >= 0;
-        loads++;
-#ifdef PROF
-        { void prof_mark(const char *); prof_mark("boot hook"); }
-#endif
-        boot_without_library();
-        return;
-    }
-#endif
     uint32_t t, res0;
     int sz, rc;
     if (!loads) e_debug = file_read("FLAC\\debug.txt", 0, 0, &sz) >= 0;
@@ -114,7 +49,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     { void prof_mark(const char *); prof_mark(task ? "reload start" : "library load start"); }
 #endif
     log_t(1);
-    log_s(deferred == 2 ? "== library load (deferred from boot) #" : task ? "== library reload after disk mode #" : "== library load at boot #");
+    log_s(task ? "== library reload after disk mode #" : "== library load at boot #");
     log_d(loads); log_s(", region E "); log_x((uint32_t)__e_start, 8); log_c('-'); log_x((uint32_t)__e_end, 8);
     log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     log_s(e_debug ? ", debug\n" : "\n");
@@ -183,7 +118,6 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     { void fat_state_log(const char *); fat_state_log("before the log write"); }
 #endif
     if (task) { void fatdir_release(void); fatdir_release(); }   /* at boot, the UI init hook closes it */
-    if (deferred == 2) deferred = 3;
     log_flush();
 }
 
@@ -192,11 +126,13 @@ E_ENTRY void e_libload_task(void *a0, void *a1, void *a2, void *a3) { libload(1,
 
 /* Album artists. Apple's Artists menu groups by the artist string, so the sync writes the album
  * artist there (libsync make_track) and keeps the song's own artist, when it differs, as the
- * comment (string type 8, track record +0x4c), which nothing else shows. Apple's per-song artist
+ * comment (string type 8, track record +0x4c), which nothing else shows for FLAC entries. Apple's per-song artist
  * text (Now Playing, song rows: 0x08298f3c) reads the artist with 0x0804a840 (record, string out);
  * that call comes here and takes the comment first (0x0804a8d8, same form). */
+int track_is_flac(const uint8_t *t);           /* path.c */
 E_ENTRY void e_song_artist(uint8_t *track, void *out)
 {
-    if (*(uint32_t *)(track + 0x4c)) ((void (*)(void *, void *))0x0804a8d8)(track, out);
+    /* FLAC entries only: tracks from iTunes or Finder keep their real comments there */
+    if (*(uint32_t *)(track + 0x4c) && track_is_flac(track)) ((void (*)(void *, void *))0x0804a8d8)(track, out);
     else ((void (*)(void *, void *))0x0804a840)(track, out);
 }

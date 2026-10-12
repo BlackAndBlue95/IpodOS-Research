@@ -43,3 +43,4 @@ runtime/prof_hooks.json
 # Apple SF Symbols renders (personal use only): never commit
 sficons/
 runtime/sficons_data.h
+runtime/sfdigits_data.h

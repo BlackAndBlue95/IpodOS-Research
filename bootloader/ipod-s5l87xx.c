@@ -610,9 +610,9 @@ static int oschain_boot(void)
 
 #if (CONFIG_STORAGE & STORAGE_ATA)
     /* Flush the drive's write cache and put it to sleep (as the OF path does with ata_sleepnow):
-       the OS must take over an idle drive (2026-10-07). On the flash card behind the iFlash this
-       only gates the controller clock; no settle time is needed after it (the headset remote,
-       which the old 2.5 s wait here was for, is handled by the OS itself since D43). */
+       the OS must take over an idle drive. On the flash card behind the iFlash this only gates
+       the controller clock; no settle time is needed after it (the OS sets up the headset
+       remote itself). */
     ata_sleepnow();
 #endif
 

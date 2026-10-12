@@ -2,16 +2,9 @@
 #include "e.h"
 #include "os.h"
 
-/* --ui-lazy builds: the first 10 screens before the first frame (R21/R22, device-proven).
- * Opt-in, NOT device-safe yet (R23-R27 crashed on the iPod during the background build while
- * QEMU showed nothing): -DFONTFILE_LATER (per-font-file pass after the build), -DGLYPH_SKIP=mask
- * (boot glyph pass for the main menu's fonts only), -DSAFEPUSH (finish the build before a push;
- * needs mkpatch18 --ui-safepush). */
+/* --ui-lazy builds: the first PB_K screens are built before the first frame, the rest by the timer. */
 #ifndef PB_K
 #define PB_K 10
-#endif
-#ifdef FONTFILE_LATER
-#define EXP_FONTFILE_LATER
 #endif
 
 /* 0x08119c1c registers an object in a list kept sorted by a per-task value (field +16 of each
@@ -73,63 +66,20 @@ static inline void wr32(uint8_t *p, uint32_t v) { *(volatile uint32_t *)p = v; }
    state 0), runs the glyph pass for them, and leaves the rest to the timer. */
 uint32_t pb_k __attribute__((used)) = PB_K;
 extern uint32_t pb_lazy;
-#ifndef GLYPH_SKIP
-#define GLYPH_SKIP 0                /* 0x7FFED: all but instances 1 and 4 (the main menu's text); not device-safe yet */
-#endif
-/* the boot glyph pass (0x081ae8c4 mode 0), element by element as it does it; font instances in
-   GLYPH_SKIP are left to the final pass of the background build (their requested-character
-   bitmap stays pending until then) */
-static uint32_t glyph_pending;          /* font instances whose boot glyphs are still to do */
-static void pb_glyph_one(uint8_t *b, uint32_t i)
-{
-    void **list = *(void ***)0x089cc8dc;
-    uint8_t *e = 0, *f;
-    void **vt;
-    if (i >= ((uint32_t *)list)[1]) return;
-    if (!((int (*)(void *, uint32_t, void *))(*(void ***)list)[0x3c / 4])(list, i, &e) || !e) return;
-    f = *(uint8_t **)(e + 0x98);
-    vt = *(void ***)f;
-    ((void (*)(void *))vt[0x2c / 4])(f);
-    ((void (*)(void *, int, void *))vt[0x1c / 4])(f, 0, b + 0x120);
-}
-/* background ticks: the skipped font instances first, one per tick, before the next screen */
-void __attribute__((used)) pb_pending_step(uint8_t *b)
-{
-    uint32_t i;
-    if (!glyph_pending) return;
-    for (i = 0; i < 32 && !(glyph_pending >> i & 1); i++) ;
-    glyph_pending &= ~(1u << i);
-    pb_glyph_one(b, i);
-    if (!glyph_pending) { log_s("   ui: deferred boot glyphs done at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n"); }
-}
-static void pb_glyph_loop(uint8_t *b, uint32_t skip)
-{
-    void **list = *(void ***)0x089cc8dc;
-    uint32_t n = ((uint32_t *)list)[1], i;
-    for (i = 0; i < n; i++) {
-        if (i < 32 && (skip >> i & 1)) { glyph_pending |= 1u << i; continue; }
-        pb_glyph_one(b, i);
-    }
-}
 static void __attribute__((used)) pb_glyphs_now(uint8_t *b)
 {
     uint32_t tg = TIMER_E;
     wr32(b + 0x11c, 0);
-    if (GLYPH_SKIP) pb_glyph_loop(b, GLYPH_SKIP);
-    else ((int (*)(void *, int, int))0x081ae8c4)(b, 0, 0);
+    ((int (*)(void *, int, int))0x081ae8c4)(b, 0, 0);
     wr32(b + 0x11c, 0);
     log_s("   ui: boot glyph pass "); log_d((int)((TIMER_E - tg) / 1000)); log_s(" ms\n");
-#ifdef EXP_FONTFILE_LATER
-    { extern int pb_boot_phase;
-extern int pb_running; pb_boot_phase = 0; }
-#endif
     log_s("   ui: first "); log_d((int)rd32(b + 0x114)); log_s(" screens and their glyphs built at "); log_d((int)(TIMER_E / 1000)); log_s(" ms, the rest in the background\n");
 }
 __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
 {
     __asm__ volatile(
         "cmp r5, #0\n"
-        "bne 3f\n"                       /* incremental: one screen per tick */
+        "ldrne pc, 2f\n"                 /* incremental: one screen per tick */
         "ldr ip, 4f\n ldr ip, [ip]\n"     /* blocking: keep going, unless the boot cut-off is reached */
         "cmp ip, #0\n"
         "ldreq pc, 1f\n"
@@ -140,14 +90,11 @@ __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
         "mov r0, r4\n ldr ip, 5f\n mov lr, pc\n bx ip\n"   /* glyph pass for what is built so far */
         "mov r5, #1\n"
         "ldr pc, 2f\n"
-        "3: mov r0, r4\n ldr ip, 7f\n mov lr, pc\n bx ip\n"   /* incremental: deferred boot glyphs first */
-        "ldr pc, 2f\n"
         "1: .word 0x081aea58\n"
         "2: .word 0x081aeb24\n"
         "4: .word pb_k\n"
         "5: .word pb_glyphs_now\n"
-        "6: .word pb_lazy\n"
-        "7: .word pb_pending_step\n");
+        "6: .word pb_lazy\n");
 }
 
 /* Starting from state 0 the pre-build forces itself blocking (`moveq r5, #0` at 0x081ae9d0), so
@@ -158,31 +105,15 @@ __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
  * The remaining screens and the glyph pass then run one step per timer tick. */
 uint32_t pb_lazy __attribute__((used));
 extern uint32_t pb_k;
-extern int pb_boot_phase;
 __attribute__((naked, section(".text.entry"), used)) void e_pb_entry(void)
 {
     __asm__ volatile(
-#ifdef EXP_FONTFILE_LATER
-        "cmp r0, #0\n ldreq ip, 2f\n moveq r1, #1\n streq r1, [ip]\n"   /* state 0: the boot phase starts */
-#endif
-#ifdef SAFEPUSH
-        "cmp r5, #0\n ldrneb r1, [r9]\n cmpne r1, #0\n"   /* a background tick after the build is done: */
-        "ldrne ip, 3f\n movne r1, #0\n strne r1, [ip]\n ldrne pc, 4f\n"   /* nothing to do (release the lock, return) */
-        "cmp r0, #0\n"                                   /* (flags as before: the state) */
-#endif
-        "ldr ip, 3f\n mov r1, #1\n str r1, [ip]\n"      /* the build is running */
         "ldr ip, 1f\n"
         "str r5, [ip]\n"
         "cmp r0, #0\n"                /* state, flags as at 0x081ae9cc */
         "moveq r5, #0\n"
         "bx lr\n"
-        "1: .word pb_lazy\n"
-#ifdef EXP_FONTFILE_LATER
-        "2: .word pb_boot_phase\n"
-#endif
-        "3: .word pb_running\n"
-        "4: .word 0x081aeb50\n"
-        );
+        "1: .word pb_lazy\n");
 }
 /* In background mode the glyph pass (0x081ae8c4 mode 0, normally state 2 after every screen) runs
  * here once, blocking, for the characters the first screen asked for, so its text is there on the
@@ -218,9 +149,6 @@ __attribute__((naked, section(".text.entry"), used)) void e_pb_state0_done(void)
 static int pb_refreshed;
 static void __attribute__((used)) pb_done_c(void)
 {
-#ifdef EXP_FONTFILE_LATER
-    { void ffile_catch_up(void); ffile_catch_up(); }
-#endif
     log_s("   ui: screen pre-build done at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     if (pb_lazy && !pb_refreshed && !pb_k) {
         pb_refreshed = 1;
@@ -416,62 +344,4 @@ __attribute__((used, section(".text.entry"))) int e_hfind(void *l, uint32_t key,
         if (*(const uint32_t *)e == key) { *a = *(const uint32_t *)(e + 4); *b = *(const uint32_t *)(e + 8); *pos = i; return 1; }
     }
     return 0;
-}
-
-/* Experiment (EXP_FONTFILE_LATER): the per-font-file pass 0x0826a4e4(mode), called at the end of
- * each glyph pass (0x081ae984), is skipped while the boot builds its first screens and run for
- * both modes when the background build is done. */
-#ifdef EXP_FONTFILE_LATER
-int pb_boot_phase;
-__attribute__((naked, used)) static int ffile_orig(int mode)
-{ __asm__ volatile("push {r3, r4, r5, r6, r7, r8, r9, lr}\n ldr pc, 1f\n 1: .word 0x0826a4e8\n"); }
-static int ff_skipped3, ff_skipped0;
-__attribute__((used, section(".text.entry"))) int e_ffile(int mode)
-{
-    if (pb_boot_phase && pb_lazy) { if (mode == 3) ff_skipped3 = 1; else ff_skipped0 = 1; return 0; }
-    return ffile_orig(mode);
-}
-void ffile_catch_up(void)
-{
-    if (ff_skipped3) { ff_skipped3 = 0; ffile_orig(3); }
-    if (ff_skipped0) { ff_skipped0 = 0; ffile_orig(0); }
-}
-#endif
-
-/* ---- a screen opened while the background build runs ----
- * Opening a screen during the background build crashed the iPod (R24: Music, seconds after the
- * first frame). Every push onto the screen stack goes through its vtable slot 0, 0x08104fa4
- * (slot 1 forwards to it). When the build is not done, the push first finishes it, blocking,
- * the way the boot used to build everything: 0x081ae9a0(builder, 0, &app->done). pb_running
- * (set at the build's entry, cleared at its exit 0x081aeb4c) keeps a push from inside the build
- * from re-entering it. */
-int pb_running __attribute__((used));
-__attribute__((naked, used)) static int push_orig(void *stack, void *screen, int flag)
-{ __asm__ volatile("push {r1, r2, r3, r4, r5, r6, r7, r8, r9, lr}\n ldr pc, 1f\n 1: .word 0x08104fa8\n"); }
-static int ui_shown;                    /* set at the first frame: pushes before it are the boot's own */
-void uifast_first_frame(void) { ui_shown = 1; }
-static void pb_finish_now(void)
-{
-    uint8_t *app = ((uint8_t *(*)(int))0x0817d524)(0), *b;
-    uint32_t t;
-    if (!ui_shown || !pb_lazy || pb_running || !app || app[0x118]) return;
-    b = ((uint8_t *(*)(void *, uint32_t))0x0826acc4)(*(void **)(app + 0x28), 0x7d80);
-    if (!b) return;
-    t = TIMER_E;
-    ((void (*)(void *, int, void *))0x081ae9a0)(b, 0, app + 0x118);
-    log_s("   ui: a screen was opened during the background build: finished it first ("); log_d((int)((TIMER_E - t) / 1000)); log_s(" ms)\n");
-}
-__attribute__((used, section(".text.entry"))) int e_push(void *stack, void *screen, int flag)
-{
-#ifdef PUSH_DEBUG
-    { static int n; uint8_t *app = ((uint8_t *(*)(int))0x0817d524)(0);
-      if (n++ < 6) { log_s("   push: shown "); log_d(ui_shown); log_s(" lazy "); log_d((int)pb_lazy); log_s(" running "); log_d(pb_running);
-        log_s(" done "); log_d(app ? app[0x118] : -1); log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n"); log_flush(); } }
-#endif
-    pb_finish_now();
-    return push_orig(stack, screen, flag);
-}
-__attribute__((naked, section(".text.entry"), used)) void e_pb_exit(void)
-{
-    __asm__ volatile("strb r0, [r9]\n ldr ip, 1f\n mov r1, #0\n str r1, [ip]\n bx lr\n 1: .word pb_running\n");
 }

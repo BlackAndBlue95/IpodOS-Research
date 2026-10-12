@@ -89,6 +89,7 @@ void update_check(void)
     Dev *d = 0;
     File *f = 0;
     void *m = 0;
+    int invalidated = 0;
 
     if (UPD_PROGRESS[0] == 0x50445055) {
         log_s("   update: last attempt stopped at chunk "); log_d((int)UPD_PROGRESS[1]); log_s(" of "); log_d((int)UPD_PROGRESS[2]);
@@ -117,10 +118,10 @@ void update_check(void)
     body = le32(hdr + 0x0c);
     if (hdr[0] != '8' || hdr[1] != '7' || hdr[2] != '0' || hdr[3] != '2' || size < 0x800 + 0x10000 ||
         body > (uint32_t)size - 0x800 || (le32(hdr + 0x800) & 0xff000000) != 0xea000000) {
-        fail("not a decrypted IMG1 OS image", -10); return;
+        fail("not a decrypted IMG1 OS image", -10); goto out;
     }
     d = os_malloc(sizeof *d); buf = os_malloc(CHUNK); buf2 = os_malloc(CHUNK); m = os_malloc(0x114);
-    if (!d || !buf || !buf2 || !m) { fail("memory", -11); return; }
+    if (!d || !buf || !buf2 || !m) { if (d) os_free(d); d = 0; fail("memory", -11); goto out; }
     for (k = 0; k < CHUNK; k++) { buf[k] = 0; buf2[k] = 0; }
     dev_ctor(d, 0, 0);
     dev_open(d);
@@ -175,18 +176,28 @@ void update_check(void)
             left -= want;
             updscreen_progress((uint32_t)size - left, (uint32_t)size, BAR_CHECK);
         }
-        f->vt->close(f); f->vt->del(f); f = 0;
+        f->vt->close(f); f->vt->del(f); f = 0; m = 0;            /* del frees the object's memory */
         if (!left && fsum == want_sum) {
             log_s("   update: this image is already installed (checksum "); log_x(fsum, 8); log_s("): removing the file\n");
             vol_delete(UPD_TRY);
             if (vol_delete(UPD_FILE)) vol_rename(UPD_FILE, UPD_DONE);
             log_flush();
             dev_close(d);
+            os_free(d); os_free(buf); os_free(buf2);
             return;
         }
     }
+    /* The directory entry goes invalid (length 0) before the first chunk is written and gets the
+       new length and checksum after the last one: a power loss in between leaves an entry the
+       bootloader refuses (it wants at least 64 KB), so it boots the /osos-v18.dec file instead of
+       a half-written section. */
+    st32(buf + dir_off + 40 * i + 0x10, 0);
+    st32(buf + dir_off + 40 * i + 0x1c, 0);
+    if ((rc = xfer(d, 1, buf, dir_lba, 1))) { fail("directory invalidate", rc); goto out; }
+    invalidated = 1;
     log_s("   update: writing "); log_d((int)nchunks); log_s(" chunks at sector "); log_d((int)data_lba); log_c('\n'); log_flush();
 
+    if (!m && !(m = os_malloc(0x114))) { fail("memory", -11); goto out; }
     if (!(f = os_file_ctor(m, UPD_FILE, 1024, 1)) || f->vt->open(f)) { fail("open", -16); goto out; }
     log_s("   update: file open for the copy\n"); log_flush();
     for (k = 0; k < nchunks; k++) {
@@ -237,9 +248,14 @@ void update_check(void)
     WDTCON = 0x100000;
     for (;;) ;
 out:
-    if (d) dev_close(d);
+    if (d) { dev_close(d); os_free(d); }
     if (f) f->vt->del(f);
+    else if (m) os_free(m);
+    if (buf) os_free(buf);
+    if (buf2) os_free(buf2);
     vol_delete(UPD_TRY);
     if (vol_delete(UPD_FILE)) vol_rename(UPD_FILE, UPD_DONE);        /* a failed update is not retried */
-    log_s("   update: file removed after the failure\n"); log_flush();
+    log_s("   update: file removed after the failure\n");
+    if (invalidated) log_s("   update: the firmware section is not valid now: the bootloader boots /osos-v18.dec until an update succeeds\n");
+    log_flush();
 }

@@ -93,6 +93,22 @@ E_ENTRY int e_loc_db(char *t, const char *s, int n)
     return rc;
 }
 
+/* a track record (location at +0xc0) whose file is a .flac: our sync's entries. A FLAC location
+   is never under iPod_Control\Music, so the record holds an FLPT copy (marker 1). */
+int track_is_flac(const uint8_t *t)
+{
+    const uint8_t *loc = t + 0xc0;
+    uint32_t a;
+    const char *s;
+    int n = 0;
+    if (!loc[36] || loc[0] != 1) return 0;
+    a = loc[1] | loc[2] << 8 | loc[3] << 16 | (uint32_t)loc[4] << 24;
+    if ((a & 3) || (a >> 26) != 2 || *(uint32_t *)a != LPMAGIC) return 0;
+    s = (const char *)a + 4;
+    while (n < PATH_MAX_OS && s[n]) n++;
+    return isflac(s, n);
+}
+
 /* 0x0805f738, 0x080d448c: file layer path {u16; chars} into a record */
 E_ENTRY int e_loc_set(void *p, char *loc, int flag)
 {

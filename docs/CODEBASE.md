@@ -177,10 +177,14 @@ TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read
 - Views copy colours when built, so the theme is applied before the first view (root UI init
   `0x081135a0`), and again at UI init after the library load reloads resources. The choice is
   also stored inside the image (`theme_boot`) for the early path.
-- Live Light/Dark switch: pop to main (`0x08287e30`), app reload (`0x0817cd30`), walk every view
-  remapping stored colours (text views `+0xf4`, marquee tints), repaint every layer through slot
-  `0x70`. Re-rendering the main menu's right pane (class `0x0898597c` slot `0x210`) from the
-  settings action crashes the OS, so the pane keeps its old colours until restart.
+- Live switch (Light/Dark, Automatic at sunrise/sunset, accent, Modern on/off): `theme_apply`,
+  then Apple's language-change reload walk: the root view's slot `0xd8` (`0x0814d394`, as
+  `0x081e1444` runs it after switching the strings) makes every visible view re-read its resources
+  and update in place, so the screens on the stack keep their place. Then the stored-colour walk
+  (text views `+0xf4`, marquee tints) and a repaint of every layer through slot `0x70`. Modern's
+  flattened bars are restored from saved stock copies and its Now Playing layout words put back in
+  Classic. Only the font folder (`e_font_dir`, read when the fonts are scanned at boot) follows at
+  the next start.
 - Scrolling titles: the mask is drawn with black ink (`e_marq_ink` replaces the call at
   `0x081a7e70`) and the real colour restored into the line canvas tint.
 - Modern Now Playing: the steady frame is drawn into a 320x240 RGB565 buffer by `0x0815c588`.
@@ -213,6 +217,13 @@ log". Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, optiona
   Apple's NOR resume code, which jumps back into the OS (header becomes `'used'`). The OS never
   restores PMU `0x16`, and the hand-over leaves the CPU slow for ~10 s; `power_resume_check`
   (LCD init hook and minute tick) holds full speed and sets `0x16 = 7`.
+- Battery level: there is no fuel gauge. Apple reads the raw PMU ADC count (`0x082b1ac0`) and
+  counts it against 15 thresholds (`0x089cae8e`), so its icon has 16 real steps. In Modern,
+  `battery.c` interpolates the same count to 0..100 % (8 readings, one every 5 s) and draws it into
+  status bar images 0 and 1, alternating, from the battery icon's own level call (`0x08193444` in
+  `0x081933f8`, which asks only on battery power; other users of Apple's level are untouched). Red
+  at 20 % and below; redrawn after each theme apply. Note: `0x08047460` returns 1 on battery (Apple
+  slows its updates while discharging), not on external power.
 - Rescue if a resume ever loops: DFU and `bootloader/boot-v6/rescue-noresume.dfu` (built with
   `-DOSCHAIN_NORESUME`).
 
@@ -261,6 +272,5 @@ Tests (no iPod needed):
 The device log is `FLAC\rtlog.txt` (previous run in `rtlog.prev.txt`).
 
 ## 14. Open items
-- Main-menu right pane and status bar keep the old theme after a live switch until restart.
 - `art.c` trace legend partly stale (see §6).
 - Skipping tracks with the headset remote occasionally stopped playback (not reproduced since).

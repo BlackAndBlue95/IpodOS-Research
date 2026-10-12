@@ -1,6 +1,6 @@
 /* Settings menu rows (Theme, Accent Colour, Library), their submenus, the settings file and the
  * sunset/sunrise switch. Menu resources come from host/gen_settings.py (settings_data.h).
- * Light/Dark/Automatic changes apply at the next start; the accent is live. */
+ * Theme, accent and style changes apply live (switch_live); only Modern's font waits for a restart. */
 #include "e.h"
 #include "settings_data.h"
 #include "sun.h"
@@ -20,12 +20,11 @@
 #define os_get_resource   ((void *(*)(void *, uint32_t, uint32_t))0x08267294)         /* (mgr, type, id) -> data */
 #define CHECKMARK         0x0dad0bcd                            /* Settings_MainMenu_CheckmarkBlack_Image (themed) */
 #define PROBE 0xdeadbeefu                                     /* action argument that only asks whether the action is handled */
-/* Music app getter (0x0817d524; argument ignored) and the library-reload handler (0x0817cd30):
-   the reload clears app+0x118 and signals the event at app+0xec, and the UI thread then
-   rebuilds the home screen. Used to rebuild the UI after a theme change. */
-#define os_music_app     ((void *(*)(int))0x0817d524)
-#define os_app_reloaded  ((void (*)(void *, int))0x0817cd30)
-#define os_pop_to_main   ((void (*)(void))0x08287e30)      /* PopToMainScreen: pops (destroys) every other screen */
+/* The root view (0x0811340c) and its reload walk, slot 0xd8 (0x0814d394): what Apple's language
+   change runs (0x081e1444) after switching the strings. Every visible view re-reads its resources
+   and updates in place (0x082636e8 then each class's slot 0xd4), so the screens on the stack keep
+   their place. After a theme apply it picks up the recoloured resources the same way. */
+#define os_root_view     ((uint8_t *(*)(void))0x0811340c)
 #define WDTCON (*(volatile uint32_t *)0x3c800000)              /* S5L8702 watchdog: 0x100000 resets the SoC */
 
 int theme_apply(int mode, int accent, int rebuild_ui);
@@ -266,27 +265,24 @@ void os_restart(void)
     for (;;) ;
 }
 
-/* a Light/Dark switch while the UI is up: re-colour, then rebuild the UI as after a library reload */
+/* a theme, accent or style change while the UI is up: re-colour the resources, then let every
+   view on screen reload them as a language change does. Each step flushes the log so a crash
+   names the step. */
 static void switch_live(int mode)
 {
+    uint8_t *root;
     log_s("   switch: apply\n"); log_flush();
     theme_apply(mode, theme_accent, 0);
     applied = mode;
     boot_mode = settings_mode;
-    log_s("   settings: live switch to "); log_s(mode ? "dark" : "light"); log_s(": screens popped, home rebuilt\n");
-    /* screens keep the colours they were built with, so pop them all and rebuild the home
-       screen. Each step flushes the log so a crash names the step. */
-    log_s("   switch: pop\n"); log_flush();
-    os_pop_to_main();
-    log_s("   switch: reloaded\n"); log_flush();
-    os_app_reloaded(os_music_app(0), 1);
+    log_s("   switch: reload walk\n"); log_flush();
+    if ((root = os_root_view())) ((void (*)(void *))((void **)*(void **)root)[0xd8 / 4])(root);
     log_s("   switch: walk\n"); log_flush();
-    theme_walk(mode, theme_accent);                     /* the root canvas and other long-lived views */
-    /* not theme_refresh_panes(): re-rendering the main menu's right pane (slot 0x210) from
-       here crashed the OS */
+    theme_walk(mode, theme_accent);                     /* colours views copied when they were built */
     log_s("   switch: redraw\n"); log_flush();
     { void theme_redraw_all(void); theme_redraw_all(); }   /* the status bar and other windows repaint */
-    log_s("   switch: done\n"); log_flush();
+    log_s("   settings: live switch to "); log_s(mode ? "dark" : "light"); log_s(theme_style ? ", modern" : ", classic"); log_s(", screens kept\n");
+    log_flush();
     { extern int theme_walk_pending; theme_walk_pending = 1; }   /* ... and Now Playing when it next appears */
 }
 
@@ -304,15 +300,14 @@ E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
             return 1;
         }
         if (g == 2 && k == 1) { void power_state_log(const char *); power_state_log("asked"); log_flush(); return 1; }
-        if (g == 0 && k == 3) { settings_style ^= 1; theme_style = settings_style; }   /* "Modern style" toggle */
+        if (g == 0 && k == 3) { settings_style ^= 1; theme_style = settings_style; }   /* "Modern style" (its font follows at the next start) */
         else if (g == 0) settings_mode = k; else theme_accent = k;
         log_s("   switch: action "); log_s(action); log_c('\n'); log_flush();
         settings_save();
         log_s("   switch: saved\n"); log_flush();
         embed_write();
         log_s("   switch: image copy tried\n"); log_flush();
-        if (g) theme_apply(applied < 0 ? effective_mode(settings_mode) : applied, theme_accent, 0);   /* accent: applied at once */
-        else switch_live(effective_mode(settings_mode));
+        switch_live(g ? (applied < 0 ? effective_mode(settings_mode) : applied) : effective_mode(settings_mode));
         post_keys();
         log_flush();
         return 1;
