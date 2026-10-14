@@ -185,6 +185,25 @@ TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read
   flattened bars are restored from saved stock copies and its Now Playing layout words put back in
   Classic. Only the font folder (`e_font_dir`, read when the fonts are scanned at boot) follows at
   the next start.
+- Charging screen (Modern): the OS builds the battery from slices sharing one frame (body rows
+  22..96, then a reflection): `ChargingMode_Image_{Empty,Green}_CapLeft`, `_Middle` repeated,
+  `Green_Middle_Cap` where the charge ends, `_CapRight` with the nub. `gen_sficons.py` (`chg`
+  special) redraws each slice as its share of one flat battery (grey outline, green fill, no
+  reflection), `_Critical` (low battery) as the outline with a red sliver, and the bolt and plug
+  (`_ToggleCharging/_ToggleCharged`, alpha masks the OS tints black) as white palette images. Its
+  glossy top bar is `NowPlaying_StatusBar` (`0x0dad082e`), flattened by `modern_bars`.
+- Cover Flow: its layout is a table of constant value nodes (vtable `0x08986998`, value at `+4`)
+  built at start-up around `0x082a1300`: centre cover at (0, -9, 72.5) turned 180 (flat), first
+  side cover at (55, -9, 40) turned 270 (`0x08a79840`, `0x08a79930`), side covers 15 apart (code
+  immediates), size 35, the flip to the track list at (0, 9.65, 116.25) turned 360. The left
+  side's turn is mirrored about the centre (`0x08147ee0`, patched from side - centre to
+  2 * centre - side: the same 90 for stock). Modern (`theme.c` `coverflow_style`) turns the side
+  covers flat and moves them out to 76, so the neighbours show beside the centre cover. Every
+  cover has to stay inside the screen: Apple's renderer stalls on one past the edge (an offset of
+  87 does that, and the watchdog restarts the iPod). The back side is a striped list (`+0x124` flag `0x40000`: every other row
+  filled `#F2F2F2`, `mov r0, #242` at `0x0827aee8`, the rest on `CoverFlow_Backside_Background`);
+  in Dark the stripe is `#262626`, the background `#1C1C1E`, the text white; Modern flattens its
+  header (`CoverFlow_Backside_Top_Image`).
 - Scrolling titles: the mask is drawn with black ink (`e_marq_ink` replaces the call at
   `0x081a7e70`) and the real colour restored into the line canvas tint.
 - Modern Now Playing: the steady frame is drawn into a 320x240 RGB565 buffer by `0x0815c588`.
@@ -222,7 +241,7 @@ log". Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, optiona
   `battery.c` interpolates the same count to 0..100 % (8 readings, one every 5 s) and draws it into
   status bar images 0 and 1, alternating, from the battery icon's own level call (`0x08193444` in
   `0x081933f8`, which asks only on battery power; other users of Apple's level are untouched). Red
-  at 20 % and below; redrawn after each theme apply. Note: `0x08047460` returns 1 on battery (Apple
+  at 20 % and below; redrawn after each theme apply. `0x08047460` returns 1 on battery (Apple
   slows its updates while discharging), not on external power.
 - Rescue if a resume ever loops: DFU and `bootloader/boot-v6/rescue-noresume.dfu` (built with
   `-DOSCHAIN_NORESUME`).

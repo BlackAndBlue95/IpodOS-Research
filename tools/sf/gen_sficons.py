@@ -27,6 +27,9 @@ MAP = [
     (r'StatusBarWhite_PlayStatus_Image', G, 'play.fill', 'semibold'),
     (r'StatusBar(White|Black)_Battery_Image_Charge', G, 'bolt.fill', 'semibold'),
     (r'StatusBar(White|Black)_Battery_Image_Plug', G, 'powerplug.fill', 'semibold'),
+    # charging screen: the bolt and plug over the battery (stored white, see build)
+    (r'ChargingMode_Image_ToggleCharging', G, 'bolt.fill', 'regular', (255, 255, 255)),
+    (r'ChargingMode_Image_ToggleCharged', G, 'powerplug.fill', 'regular', (255, 255, 255)),
     # Now Playing and transport
     (r'NowPlaying_(Black|White)_FF_Image|TVOut_FF_Image', None, 'forward.fill', 'semibold'),
     (r'NowPlaying_(Black|White)_Rew_Image|TVOut_Rew_Image', None, 'backward.fill', 'semibold'),
@@ -150,6 +153,27 @@ SPECIAL['NowPlaying_ProgressBar_Active_Background_Image'] = ('band', (255, 255, 
 SPECIAL['NowPlaying_ProgressBar_Inactive_Fill_Image'] = ('band', (0, 122, 255), 1.0)
 SPECIAL['NowPlaying_ProgressBar_Active_Fill_Image'] = ('band', (0, 122, 255), 1.0)
 SPECIAL['NowPlaying_ProgressBar_Scrub_Image'] = ('knob', (255, 255, 255), 1.0)
+# the charging screen's battery, built by the OS from slices: left cap, middles repeated, right cap;
+# up to the level it uses the Green slices, with Green_Middle_Cap where the charge ends
+CHG_TOP, CHG_BOT, CHG_LEFT = 22, 97, 22          # body rows and its left edge (left cap x 22)
+CHG_LINE, CHG_RADIUS, CHG_INSET = 4, 14, 8        # outline width, corner radius, fill inset
+CHG_NUB, CHG_NUB_W = (45, 29), 7                  # nub rows (from, height) and width
+CHG_OUTLINE, CHG_GREEN, CHG_RED = (142, 142, 147), (48, 209, 88), (255, 69, 58)
+CHG_MID, CHG_RIGHT = 100, 200                     # battery x of a middle slice; body right edge
+CHG_RCAP = CHG_RIGHT - 14                         # the right cap's body ends 14 px in
+CHG_FILL_FROM = CHG_LEFT + CHG_INSET
+CHG_SLICE = {                                     # slice: (battery x, body right edge, fill (from, to) or None, fill colour)
+    'Empty_CapLeft':    (0, CHG_RIGHT, None, None),
+    'Empty_Middle':     (CHG_MID, CHG_RIGHT, None, None),
+    'Empty_CapRight':   (CHG_RCAP, CHG_RIGHT, None, None),
+    'Green_CapLeft':    (0, CHG_RIGHT, (CHG_FILL_FROM, CHG_RIGHT + 50), CHG_GREEN),       # the fill runs on past the slice
+    'Green_Middle':     (CHG_MID, CHG_RIGHT, (CHG_FILL_FROM, CHG_RIGHT + 50), CHG_GREEN),
+    'Green_Middle_Cap': (CHG_MID, CHG_RIGHT, (CHG_FILL_FROM, CHG_MID + 6), CHG_GREEN),     # the charge ends 6 px in
+    'Green_CapRight':   (CHG_RCAP, CHG_RIGHT, (CHG_FILL_FROM, CHG_RIGHT - CHG_INSET), CHG_GREEN),
+    'Critical':         (0, 175, (CHG_FILL_FROM, CHG_FILL_FROM + 16), CHG_RED),            # whole battery, body to x 175
+}
+for part in CHG_SLICE:
+    SPECIAL['ChargingMode_Image_' + part] = ('chg', part)
 
 ACCENT = set()                                   # images that take the accent colour at boot
 RECODE = set()                                   # alpha masks stored as 8-bit palette images instead
@@ -262,6 +286,23 @@ def build(name, pass2):
         ACCENT.add(pid)
         cx, cy, R = (w - 1) / 2, 6.5, 5.5
         layers.append((ss_mask(w, h, lambda x, y: math.hypot(x - 0.5 - cx, y - 0.5 - cy) <= R), sp[1], sp[2]))
+    elif sp and sp[0] == 'chg':
+        # Apple's slices share one frame: the body spans rows 22..96 (a reflection follows, now
+        # dropped), from x 22 of the left cap to x 14 of the right cap, the nub beyond it. Each
+        # slice draws its share of one flat battery laid out in battery x (CHG_SLICE: where the
+        # slice sits, the body's right edge, the fill's extent, the fill colour).
+        x0, right, fill, fill_c = CHG_SLICE[sp[1]]
+        top, bot, t, r = CHG_TOP, CHG_BOT, CHG_LINE, CHG_RADIUS
+        outer = rrect(CHG_LEFT - x0, top, right - CHG_LEFT, bot - top, r)
+        inner = rrect(CHG_LEFT - x0 + t, top + t, right - CHG_LEFT - 2 * t, bot - top - 2 * t, r - t)
+        layers.append((ss_mask(w, h, lambda x, y: outer(x, y) and not inner(x, y)), CHG_OUTLINE, 1.0))
+        ny0, nh = CHG_NUB
+        nub = rrect(right - x0 - 2, ny0, CHG_NUB_W + 2, nh, 3)
+        layers.append((ss_mask(w, h, lambda x, y: nub(x, y) and x >= right - x0), CHG_OUTLINE, 1.0))
+        if fill:
+            g = CHG_INSET
+            f = rrect(fill[0] - x0, top + g, fill[1] - fill[0], bot - top - 2 * g, r - g)
+            layers.append((ss_mask(w, h, f), fill_c, 1.0))
     elif sp and sp[0] == 'pie':
         if fmt in (4, 8):                           # Settings previews: bigger, an accent image (see recode)
             box = (5, 5, 68, 68); col = (0, 122, 255); ACCENT.add(pid); RECODE.add(pid)
@@ -286,6 +327,8 @@ def build(name, pass2):
         style, sym, weight = spec[1], spec[2], spec[3]
         if len(spec) > 4: col = spec[4]
         if col == 'acc': col = (0, 122, 255); ACCENT.add(pid)     # recoloured to the accent at boot
+        if name.startswith('ChargingMode_Image_Toggle'):
+            RECODE.add(pid)                         # alpha masks the OS tints black (ChargingMode_Toggle_Color)
         big = re.fullmatch(r'Settings_\w+_Image', name) and (w, h) in ((78, 121), (78, 122))
         if big and style == G: box = (5, 5, 68, 68)  # Settings previews: no base panel, bigger symbol
         if style == G and fmt in (4, 8) and max(w, h) >= 60:

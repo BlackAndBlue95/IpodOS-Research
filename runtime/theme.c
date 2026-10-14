@@ -337,6 +337,10 @@ static void apply_code_colours(int mode, int accent)
        is drawn first in a fixed light grey (mov r0, #0xdd at 0x08286b4c). In Dark that shows as a
        light block behind the title, so it takes the page grey. */
     patch_mov_imm(0x08286b4c, mode ? theme_pal_white[0] : 0xdd);
+    /* striped lists (+0x124 flag 0x40000, such as Cover Flow's album tracks) fill every other row
+       with a fixed #F2F2F2 (mov r0, #242 at 0x0827aee8) and leave the rest on the background: in
+       Dark the stripe is a shade above the dark rows instead */
+    patch_mov_imm(0x0827aee8, mode ? 0x26 : 242);
     icache_sync();
     /* black fills stay black in both themes (Now Playing video, photos); black text is theme_text */
     theme_pal_black[0] = theme_pal_black[1] = theme_pal_black[2] = 0;
@@ -975,11 +979,11 @@ E_ENTRY void e_opbar_ink(void *dst, uint8_t *rgba)
 /* every bitmap modern_bars fills, for the save before the first fill and the way back */
 static void for_each_modern_bar(void (*fn)(uint32_t id))
 {
-    static const uint32_t single[2] = { 0x0dad00f8, 0x0dad0aa9 };   /* StatusBarBlack_Background, Settings_About_Band */
+    static const uint32_t single[4] = { 0x0dad00f8, 0x0dad082e, 0x0dad0aa9, 0x0dad05a6 };   /* StatusBarBlack_Background, NowPlaying_StatusBar, Settings_About_Band, CoverFlow_Backside_Top */
     uint32_t i;
     for (i = 0; i < 6; i++) fn(modern_panel[i]);
     for (i = 0; i < 3; i++) { fn(modern_well[i]); fn(modern_thumb[i]); fn(modern_field[i]); fn(np_opt_well[i]); fn(np_opt_thumb[i]); }
-    for (i = 0; i < 2; i++) fn(single[i]);
+    for (i = 0; i < 4; i++) fn(single[i]);
     for (i = 0; modern_mean[i]; i++) fn(modern_mean[i]);
 }
 static void save_stock(uint32_t id) { uint32_t size; orig_of(T_BMAP, id, &size); }
@@ -1006,6 +1010,8 @@ static void modern_bars(int mode, const uint8_t *acc)
         if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_thumb[i], &size)) && acc) bm_fill(d, size, acc);
     }
     if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad00f8, &size))) bm_fill(d, size, mode ? theme_pal_white : near_black);   /* StatusBarBlack_Background (About, USB) */
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad082e, &size))) bm_fill(d, size, near_black);   /* NowPlaying_StatusBar (Now Playing, charging): its text stays white */
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad05a6, &size))) bm_fill(d, size, band_dark);    /* CoverFlow_Backside_Top: the album header, white text */
     if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad0aa9, &size))) bm_fill(d, size, mode ? band_dark : band_light);   /* Settings_About_Band */
     for (i = 0; modern_mean[i]; i++)
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_mean[i], &size)) && bm_mean(d, c)) bm_fill(d, size, c);
@@ -1046,6 +1052,41 @@ static uint32_t bmcache_key[BMCACHE];
    applies, after which they hold their pristine pixels again */
 int theme_gen;
 const uint8_t *theme_bitmap(uint32_t id, uint32_t *size) { return pkg_find(T_BMAP, id, size); }
+/* Cover Flow. Its layout is a table of constant value nodes (vtable 0x08986998, value at +4)
+   built by a static constructor (around 0x082a1300), among them the side covers' turn about the
+   vertical axis (CF_SIDE_TURN, 270; the left side mirrors it about the centre's 180 at 0x08147ee0)
+   and the first side cover's offset from the centre (CF_SIDE_X, 55). Modern turns the side covers
+   flat and moves them out so the neighbours show beside the centre cover. Every cover has to stay
+   inside the screen: Apple's renderer stalls on one past the edge, which an offset of 87 reaches.
+   The back side (an album's tracks) keeps its own white rows and black text (the
+   CoverFlow_Backside_* COLRs, untouched by the dark rules); in Dark it gets dark rows, white text
+   and the separator grey. */
+#define CF_NODE_VT   0x08986998
+#define CF_SIDE_TURN 0x08a79930
+#define CF_SIDE_X    0x08a79840
+static void cf_set(uint32_t node, int32_t v)
+{
+    if (rd32((const uint8_t *)node) == CF_NODE_VT) *(int32_t *)(node + 4) = v;
+}
+static void coverflow_style(int mode, int modern)
+{
+    static const struct { uint32_t id, dark; } back[3] = {
+        { 0x0dad05a5, 0x1c1c1e },      /* CoverFlow_Backside_Background_Color */
+        { 0x0dad05a2, 0xffffff },      /* CoverFlow_Backside_Text_Color */
+        { 0x0dad05a4, 0x38383a },      /* CoverFlow_Backside_Border_Color */
+    };
+    uint32_t i, size, v;
+    cf_set(CF_SIDE_TURN, (modern ? 180 : 270) << 16);
+    cf_set(CF_SIDE_X, (modern ? 76 : 55) << 16);
+    for (i = 0; i < 3; i++) {
+        const uint8_t *src = orig_of(T_COLR, back[i].id, &size);
+        if (!src || size < 4) continue;
+        v = rd32(src);
+        if (mode) v = (v & 0xff000000) | back[i].dark;
+        rsrc_write(T_COLR, back[i].id, &v, 4);
+    }
+}
+
 int theme_apply(int mode, int accent, int rebuild_ui)
 {
     const uint8_t *acc;
@@ -1114,6 +1155,7 @@ int theme_apply(int mode, int accent, int rebuild_ui)
         const uint8_t *src = orig_of(T_COLR, 0x0dad009d, &size);
         if (src && size >= 4) { v = rd32(src); if (rsrc_write(T_COLR, 0x0dad009d, &v, 4)) bad++; else done++; }
     }
+    coverflow_style(mode, theme_style);
     theme_named(mode, accent, acc);
     { void battery_redraw(void); battery_redraw(); }   /* its two images just got their stock pixels back */
     applied_mode = mode; applied_accent = accent;

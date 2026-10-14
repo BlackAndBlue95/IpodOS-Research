@@ -1,5 +1,5 @@
 #!/bin/zsh
-# tourcmp.sh BASE_KERNEL VARIANT_KERNEL...  — real-time tours (main menu panes, Music, Songs, Now
+# tourcmp.sh BASE_KERNEL VARIANT_KERNEL...: real-time tours (main menu panes, Music, Songs, Now
 # Playing, Settings, Backlight, Extras) right after the first frame; prints differing pixels per screen
 cd /Users/harrison/IPOD/build/qemu/run
 Q=../src/build/qemu-system-arm

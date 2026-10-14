@@ -206,7 +206,6 @@ void rc_stop(void)
     log_s("   read cache: "); log_d((int)rc_hits); log_s(" hits ("); log_d((int)(rc_saved >> 10)); log_s(" KB not re-read), ");
     log_d((int)rc_miss); log_s(" misses, "); log_d(rc_n); log_s(" blocks kept, "); log_d((int)(rc_bytes >> 10)); log_s(" KB; calls "); log_d((int)rc_calls); log_s(", drive 1 "); log_d((int)rc_d1);
     { extern uint32_t pmu_hits, pmu_miss; log_s("; PMU cache "); log_d((int)pmu_hits); log_s(" hits, "); log_d((int)pmu_miss); log_s(" reads"); }
-    { extern uint32_t hf_fast, hf_slow; log_s("; handler lookups "); log_d((int)hf_fast); log_s(" direct, "); log_d((int)hf_slow); log_s(" generic"); }
     log_s("; device time: drive 1 "); log_d((int)(rc_t_d1 / 1000)); log_s(" ms for "); log_d((int)rc_kb_d1); log_s(" KB, other drives "); log_d((int)(rc_t_other / 1000)); log_s(" ms\n");
     rc_clear();
 }
@@ -313,35 +312,4 @@ __attribute__((used, section(".text.entry"))) void e_wheelwait(void *a)
     uint32_t t = TIMER_E;
     wheelwait_orig(a);
     if (ww_n++ < 4) { log_s("   ui: waited "); log_d((int)((TIMER_E - t) / 1000)); log_s(" ms for the wheel power-up, from "); log_d((int)(t / 1000)); log_s(" ms\n"); }
-}
-
-/* ---- message dispatch: handler lookup ----
- * A task's dispatcher (0x081213e0) looks up every handler registered for a message code in a
- * list of (code, handler, context) entries, 0x081aa46c / 0x081aa3e0: from position *pos it walks
- * backwards to index 0 through the generic iterator (a virtual GetAt and neighbour bookkeeping
- * per element), returns the first entry with that code and leaves its index in *pos; the next
- * call continues below it. Every message walks the whole list this way. No handler runs inside a
- * lookup, so the list cannot change during one; this scans the array directly, same order, same
- * result. Only for the contiguous array class (GetAt 0x08299d48) with 12-byte entries; anything
- * else goes to the original. */
-__attribute__((naked, used)) static int hfind_orig(void *l, uint32_t key, uint32_t *a, uint32_t *b, int32_t *pos)
-{ __asm__ volatile("push {r4, r5, r6, r7, lr}\n ldr pc, 1f\n 1: .word 0x081aa3e4\n"); }
-uint32_t hf_fast, hf_slow;
-__attribute__((used, section(".text.entry"))) int e_hfind(void *l, uint32_t key, uint32_t *a, uint32_t *b, int32_t *pos)
-{
-    void **vt = *(void ***)l;
-    int32_t n, s, i;
-    const uint8_t *base, *e;
-    if (vt[0x3c / 4] != (void *)0x08299d48 || ((uint32_t (*)(void *))vt[0x18 / 4])(l) != 12) { hf_slow++; return hfind_orig(l, key, a, b, pos); }
-    hf_fast++;
-    n = *(int32_t *)((uint8_t *)l + 4);
-    base = *(const uint8_t **)((uint8_t *)l + 8);
-    s = *pos;
-    if (s < 0) return 0;               /* before the start: nothing below */
-    if (s > n) s = n;                  /* past the end: from the last entry */
-    for (i = s - 1; i >= 0; i--) {
-        e = base + 12 * i;
-        if (*(const uint32_t *)e == key) { *a = *(const uint32_t *)(e + 4); *b = *(const uint32_t *)(e + 8); *pos = i; return 1; }
-    }
-    return 0;
 }

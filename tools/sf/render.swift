@@ -1,4 +1,4 @@
-// render.swift LIST OUTDIR — renders Apple SF Symbols (or system-font text) as 8-bit alpha masks.
+// render.swift LIST OUTDIR: renders Apple SF Symbols (or system-font text) as 8-bit alpha masks.
 // LIST lines: name W H bx by bw bh weight rot what   (what = SF symbol name, or "text:STRING"; rot degrees clockwise)
 // The glyph is fitted into the box (bx,by,bw,bh) keeping its aspect, centred. Output OUTDIR/name.a (W*H bytes).
 import AppKit

@@ -1,5 +1,5 @@
 #!/bin/sh
-# tour.sh MONSOCK PREFIX "keys..."  — send keys through the monitor; "shot" takes a screenshot
+# tour.sh MONSOCK PREFIX "keys...": sends keys through the monitor; "shot" takes a screenshot
 S=$1; P=$2; shift 2; n=0
 for k in $*; do
   case $k in

@@ -115,6 +115,7 @@ if a.hooks == 'all':
     retarget(0x081df414, 0x08267210, sym['e_opbar_ink'])
     retarget(0x0815c5b8, 0x08268b7c, sym['e_np_present'])     # Now Playing snapshot: Modern layout drawn from the cover Apple drew; no tilted-edge shading
     wr(0x08270728, 0x1b000000 | (((sym['e_cover_angle'] - 0x08270728 - 8) >> 2) & 0xffffff), 0x15901004)   # cover angle: Now Playing flat in Modern style
+    wr(0x08147ee0, 0xe0615080, 0xe0415000)   # Cover Flow left covers' turn: 2 * centre - side, not side - centre (both 90 for stock's 270 and 180)
     if 'e_font_dir' in sym:   # fonts folder: FLAC\Fonts on the music volume in Modern style (theme.c)
         wr(0x080692f8, 0xea000000 | (((sym['e_font_dir'] - 0x080692f8 - 8) >> 2) & 0xffffff), 0xe3500001)
     wr(0x08261ef4, 0xeb000000 | (((sym['e_hl_bottom_r'] - 0x08261ef4 - 8) >> 2) & 0xffffff), 0xe5cd6118)   # selection bar bottom row: store the accent's red
