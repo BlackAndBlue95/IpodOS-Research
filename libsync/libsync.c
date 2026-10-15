@@ -770,8 +770,8 @@ static int needs_rebuild(const struct trk *t)
 {
     if (!last_is_loc(t)) return 1;
     if (t->hl >= LS_MARK + 16 && !has_marker(t) && !(trust_unmarked && marker_blank(t))) return 1;
-    /* an episode without remember-position (0xa6) */
-    if (t->hl > 0xaa && g32(t->h + 24) == M4V_TYPE && !t->h[0xa6]) return 1;
+    /* an episode with remember-position (0xa6): the OS bootlooped on it after a play */
+    if (t->hl > 0xa6 && g32(t->h + 24) == M4V_TYPE && t->h[0xa6]) return 1;
     return 0;
 }
 static int has_record(const struct trk *t, uint32_t type)
@@ -1059,7 +1059,6 @@ static int make_video(const struct fent *f, uint32_t id, const struct trk *old)
     h[0x78] = 1;
     fsr.f = (float)sr;
     p32(h + 0x88, fsr.u);
-    h[0xa6] = 1;                        /* resume where it was left */
     h[0xb1] = 1;                        /* video */
     p32(h + 0xd0, MT_TVSHOW);
     p32(h + 0xd4, v.season);

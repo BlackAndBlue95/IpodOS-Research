@@ -31,12 +31,21 @@ void libload_first_frame(void)
     static int seen;
     if (seen) return;
     seen = 1;
+    crumb_state(2);                       /* DIAG */
     log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
     { void rc_stop(void); rc_stop(); }
+    { void rtxcbug_script(void); rtxcbug_script(); }   /* FLAC\rtxcbug.txt, if any */
+#ifdef RTXCBUG_TEST
+    { int rtxcbug_cmds(const char *, int); static const char t[] = "t\nz\n"; rtxcbug_cmds(t, sizeof t - 1); }
+#endif
 #ifdef PROF_UI
     { void prof_mark(const char *); void prof_stop(int); prof_mark("first frame"); prof_stop(1); }
 #endif
     log_flush();
+#ifdef CRASH_TEST
+    log_s("   crash test: undefined instruction\n");
+    __asm__ volatile(".word 0xe7f000f0");       /* emulator only: exercises crash.c */
+#endif
 }
 
 static void libload(int task, void *a0, void *a1, void *a2, void *a3)
@@ -53,6 +62,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     log_d(loads); log_s(", region E "); log_x((uint32_t)__e_start, 8); log_c('-'); log_x((uint32_t)__e_end, 8);
     log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     log_s(e_debug ? ", debug\n" : "\n");
+    if (!task) { void crash_report(void); crash_report(); }
     path_new_library();
     art_new_library();
     if (!task) {
@@ -118,6 +128,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     { void fat_state_log(const char *); fat_state_log("before the log write"); }
 #endif
     if (task) { void fatdir_release(void); fatdir_release(); }   /* at boot, the UI init hook closes it */
+    if (task) { void rtxcbug_script(void); rtxcbug_script(); }   /* after a USB session: FLAC\rtxcbug.txt, if any */
     log_flush();
 }
 
@@ -132,6 +143,7 @@ E_ENTRY void e_libload_task(void *a0, void *a1, void *a2, void *a3) { libload(1,
 int track_is_flac(const uint8_t *t);           /* path.c */
 E_ENTRY void e_song_artist(uint8_t *track, void *out)
 {
+    CRUMB();
     /* FLAC entries only: tracks from iTunes or Finder keep their real comments there */
     if (*(uint32_t *)(track + 0x4c) && track_is_flac(track)) ((void (*)(void *, void *))0x0804a8d8)(track, out);
     else ((void (*)(void *, void *))0x0804a840)(track, out);

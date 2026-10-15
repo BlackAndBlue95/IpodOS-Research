@@ -13,7 +13,11 @@ void log_s(const char *s);
 void log_x(uint32_t v, int digits);
 void log_d(int v);
 void log_name(const char *s);
+int log_tail(char *dst, int n);
 int log_flush(void);
+void crumb(const char *name);                /* DIAG: first call of a hook between ui init and the first frame */
+void crumb_state(int s);                     /* 1 ui init, 2 first frame */
+#define CRUMB() crumb(__func__)
 
 /* osfile.c */
 int file_write(const char *path, const void *data, uint32_t n);

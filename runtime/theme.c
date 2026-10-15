@@ -393,6 +393,7 @@ __attribute__((naked, section(".text.entry"), used)) void e_lcd_clear(void)
 #define os_clear_colour ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t))0x082c5f14)
 __attribute__((used, noinline, section(".text.entry"))) void e_art_clear(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
+    CRUMB();
     (void)r; (void)g; (void)b;
     os_clear_colour(theme_pal_white[0] * 0x10000u / 255, theme_pal_white[1] * 0x10000u / 255, theme_pal_white[2] * 0x10000u / 255, a);
 }
@@ -405,6 +406,7 @@ __attribute__((used, noinline, section(".text.entry"))) void e_art_clear(uint32_
 #define os_mesh_set_vertices ((void (*)(void *, int32_t *, int, int))0x083c89b0)
 __attribute__((used, section(".text.entry"))) void e_refl_verts(void *mesh, int32_t *v, int n, int k)
 {
+    CRUMB();
     int i, j;
     if (theme_style && n > 0 && k > 0 && k <= 4)
         for (i = 1; i < n; i++) for (j = 0; j < k; j++) v[i * k + j] = v[j];
@@ -425,6 +427,7 @@ __attribute__((naked, section(".text.entry"), used)) void e_hl_edge_r(void)
 void settings_early(void);
 static void __attribute__((used)) uiinit_c(uint32_t *r)
 {
+    CRUMB();
     static int done;
     (void)r;
     if (done) return;
@@ -433,6 +436,7 @@ static void __attribute__((used)) uiinit_c(uint32_t *r)
 }
 static void __attribute__((used)) lcdinit_c(uint32_t *r)
 {
+    CRUMB();
     void power_resume_check(void);
 #ifdef PROF
     { void prof_mark(const char *); prof_mark("lcd init"); }
@@ -742,6 +746,7 @@ void theme_dump_views(void)
 static int first_render_logged;
 static void __attribute__((used)) render_c(uint32_t *r)
 {
+    CRUMB();
     uint8_t *root;
     { void libload_first_frame(void); libload_first_frame(); }
     if (theme_walk_pending != 2) return;
@@ -776,6 +781,7 @@ __attribute__((naked, section(".text.entry"), used)) void hk_render(void)
 static int marq_logged = 6;      /* 6 turns the dump off; the hook stays in place */
 static void __attribute__((used)) marq_c(uint32_t *r)
 {
+    CRUMB();
     uint8_t *m = (uint8_t *)r[0];
     uint32_t n, i;
     if (!ptr_ok((uint32_t)m)) return;
@@ -814,6 +820,7 @@ static void __attribute__((used)) marq_c(uint32_t *r)
 typedef void (*marq_text_t)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint8_t *);
 E_ENTRY void e_marq_ink(uint32_t view, uint32_t canvas, uint32_t rect, uint32_t str, uint32_t s0, uint32_t s1, uint32_t s2, uint8_t *col)
 {
+    CRUMB();
     uint8_t save[4], *t = (uint8_t *)canvas + 0x11;
     if (ptr_ok(view)) np_title_accent((uint8_t *)view, applied_accent);
     save[0] = col[0]; save[1] = col[1]; save[2] = col[2]; save[3] = col[3];
@@ -968,6 +975,7 @@ static const uint32_t np_opt_thumb[3] = { 0x0dad015d, 0x0dad015c, 0x0dad015e };
    white on the accent pill. */
 E_ENTRY void e_opbar_ink(void *dst, uint8_t *rgba)
 {
+    CRUMB();
     uint8_t c[4];
     c[0] = rgba[0]; c[1] = rgba[1]; c[2] = rgba[2]; c[3] = rgba[3];
     if (theme_style) {
@@ -1199,6 +1207,7 @@ __attribute__((naked, section(".text.entry"), used)) void e_cover_angle(void)
 #define os_path_assign ((void (*)(void *, const char *))0x0826e428)
 __attribute__((used, section(".text.entry"))) void e_font_dir(int kind, int8_t *vol, void *path)
 {
+    CRUMB();
     static int have = -1;
     int size;
     if (kind != 1) return;

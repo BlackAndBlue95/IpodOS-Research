@@ -254,6 +254,7 @@ __attribute__((naked, used)) static int gettime_orig(uint8_t *out)
 static uint8_t tm_val[12]; static int tm_rc; static uint32_t tm_at; static int tm_ok;
 __attribute__((used, section(".text.entry"))) int e_gettime(uint8_t *out)
 {
+    CRUMB();
     uint32_t c, now;
     c = irq_off(); now = TIMER_E;
     int rc;
@@ -269,6 +270,7 @@ __attribute__((naked, used)) static int adc_orig(int type, uint32_t *out)
 static uint32_t adc_val[5], adc_at[5]; static int adc_rc[5], adc_ok[5];
 __attribute__((used, section(".text.entry"))) int e_adc(int type, uint32_t *out)
 {
+    CRUMB();
     uint32_t c, now = TIMER_E;
     int rc;
     if (type < 1 || type > 4) return adc_orig(type, out);
@@ -285,6 +287,7 @@ __attribute__((naked, used)) static int chg_orig(void)
 static int chg_val, chg_ok; static uint32_t chg_at;
 __attribute__((used, section(".text.entry"))) int e_chg(void)
 {
+    CRUMB();
     uint32_t now = TIMER_E;
     if (chg_ok && now - chg_at < PMU_TTL) { pmu_hits++; return chg_val; }
     chg_val = chg_orig(); chg_at = now; chg_ok = 1; pmu_miss++;
@@ -296,6 +299,7 @@ __attribute__((naked, used)) static int ext_orig(void)
 static int ext_val, ext_ok; static uint32_t ext_at;
 __attribute__((used, section(".text.entry"))) int e_ext(void)
 {
+    CRUMB();
     uint32_t now = TIMER_E;
     if (ext_ok && now - ext_at < PMU_TTL) { pmu_hits++; return ext_val; }
     ext_val = ext_orig(); ext_at = now; ext_ok = 1; pmu_miss++;
@@ -309,6 +313,7 @@ __attribute__((naked, used)) static void wheelwait_orig(void *a)
 static int ww_n;
 __attribute__((used, section(".text.entry"))) void e_wheelwait(void *a)
 {
+    CRUMB();
     uint32_t t = TIMER_E;
     wheelwait_orig(a);
     if (ww_n++ < 4) { log_s("   ui: waited "); log_d((int)((TIMER_E - t) / 1000)); log_s(" ms for the wheel power-up, from "); log_d((int)(t / 1000)); log_s(" ms\n"); }

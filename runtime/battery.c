@@ -116,6 +116,7 @@ void battery_redraw(void)
 }
 E_ENTRY int e_batt_index(void *app, int arg)
 {
+    CRUMB();
     uint32_t now = TIMER_E, raw, sum = 0;
     int i, pct;
     if (!theme_style) return os_batt_index(app, arg);

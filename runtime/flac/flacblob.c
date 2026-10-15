@@ -20,6 +20,8 @@ struct File { const struct FileVT *vt; };
 #include "rbflac.h"
 #include "rbfir.h"
 #include "fir.h"
+void crumb(const char *name);                /* DIAG (log.c) */
+#define CRUMB() crumb(__func__)
 
 #define MAXCH 8
 #define FIRMAX 128
@@ -602,6 +604,7 @@ static int isflac(const char *p)
  * (0 ok; otherwise it closes the file and fails the track). */
 static int __attribute__((used)) parse_c(uint32_t *r)
 {
+    CRUMB();
     uint8_t *obj = (uint8_t *)(uintptr_t)r[0];
     int rc;
     if (!obj || !isflac((const char *)(obj + 0x14))) return 0;
@@ -916,6 +919,7 @@ File *flac_file_new(void *mem, const char *path, int a2, int a3)
 /* WAV Open (0x0828a96c) calls this in place of the File ctor */
 __attribute__((section(".text.entry"), used, noinline)) File *e_flac_open(void *mem, const char *path, int a2, int a3)
 {
+    CRUMB();
     File *r;
     if (!isflac(path)) return os_file_ctor(mem, path, a2, a3);
     r = flac_file_new(mem, path, a2, a3);
@@ -923,8 +927,8 @@ __attribute__((section(".text.entry"), used, noinline)) File *e_flac_open(void *
     return r;
 }
 /* FindImageForTrack and ArtworkThumb::Load call sites */
-__attribute__((section(".text.entry"), used, noinline)) void *e_art_find(void *lib, uint8_t *track) { return art_find(lib, track); }
-__attribute__((section(".text.entry"), used, noinline)) void e_art_load(void *th, void *alloc) { art_load(th, alloc); }
+__attribute__((section(".text.entry"), used, noinline)) void *e_art_find(void *lib, uint8_t *track) { CRUMB(); return art_find(lib, track); }
+__attribute__((section(".text.entry"), used, noinline)) void e_art_load(void *th, void *alloc) { CRUMB(); art_load(th, alloc); }
 #else
 uint32_t *host_trace(void) { return trace_buf; }
 int host_fr_open(void *obj, const char *path) { return fr_open(obj, path); }

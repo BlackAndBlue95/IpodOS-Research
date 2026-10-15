@@ -65,6 +65,9 @@ def br(at, name):
     check((w & 0x0e000000) == 0x0a000000 and target(at, w) == sym[name], '%08x -> %s' % (at, name))
 br(0x0804d7c4, 'e_libload_boot')
 br(0x081ae29c, 'e_libload_task')
+for at in (0x0802dd08, 0x0802dd34, 0x0802dd4c, 0x0802dd64, 0x0802dd7c): br(at, 'e_cpu_exc')
+br(0x0802dd1c, 'e_swi')
+check(heap - 0x800 >= E + len(e), 'crash record %#x is above E' % (heap - 0x800))
 if full:
     br(0x0828a96c, 'e_flac_open')
     for at in (0x0804647c, 0x080464b0, 0x080464cc, 0x08092e40, 0x080931c0, 0x080c70b8, 0x08299628): br(at, 'e_art_find')

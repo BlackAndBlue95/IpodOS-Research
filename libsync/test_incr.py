@@ -461,7 +461,7 @@ ok = len(v20) == 4
 for rel, (secs, season, ep, title, show) in EPS.items():
     t = v20.get(':TV Shows:' + rel.replace('/', ':'))
     ok &= bool(t) and t.u(40) == secs * 1000 and t.u(0xd4) == season and t.u(0xd8) == ep and t.u(0xd0) == 0x40 \
-        and t.hdr[0xa6] == 1 and t.hdr[0xaa] == 0 and t.hdr[0xb1] == 1 and t.s(1) == title and t.s(4) == show \
+        and t.hdr[0xa6] == 0 and t.hdr[0xaa] == 0 and t.hdr[0xb1] == 1 and t.s(1) == title and t.s(4) == show \
         and t.s(3) == '%s, Season %d' % (show, season) and t.s(19) == show and t.s(20) == 'S%02dE%02d' % (season, ep) \
         and struct.unpack('<f', bytes(t.hdr[0x88:0x8c]))[0] == 44100
 check(ok, 'show, season, episode (from SnnEnn, else the place in the folder), title, length, rate and flags')
@@ -470,18 +470,18 @@ check(nflac(db20) == int(r['flacs']) and int(r['kept']) == int(r['flacs']), 'the
 r = run('--now', str(NOW + 2300))
 check(r['rc'] == '0' and r['wrote'] == '0' and r['kept'] == str(int(r['flacs']) + 4), 'again: nothing to do')
 
-# an episode with 0xaa (inside dbid2) set in place of 0xa6, remember position
+# an episode with remember-position (0xa6) set, as R66 wrote them
 loc = ':TV Shows:Show B:Intro.mp4'
 d = bytearray(raw20); o = 0; t = v20[loc]
 while (o := d.find(b'mhit', o)) >= 0:
-    if u32(d, o + 16) == t.id: d[o + 0xa6] = 0; d[o + 0xaa] = 1; break
+    if u32(d, o + 16) == t.id: d[o + 0xa6] = 1; break
     o += 4
 open(dbp, 'wb').write(fs.h58sign(fs.FWID, bytes(d)))
 r = run('--now', str(NOW + 2400))
 raw20b, db20b = load(dbp); validate(raw20b, db20b); verify(dbp)
 t2 = videos(db20b)[loc]
 check(r['wrote'] == '1' and r['migrated'] == '1' and r['added'] == '0', 'that entry rebuilt once')
-check(t2.hdr[0xa6] == 1 and t2.hdr[0xaa] == 0 and t2.id == t.id and bytes(t2.dbid) == bytes(t.dbid), 'with 0xa6 set, 0xaa clear, id and dbid kept')
+check(t2.hdr[0xa6] == 0 and t2.id == t.id and bytes(t2.dbid) == bytes(t.dbid), 'with 0xa6 clear, id and dbid kept')
 
 print('21. the Music app rewrites the database with episodes in it')
 d = bytearray(open(dbp, 'rb').read()); o = 0

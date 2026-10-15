@@ -205,6 +205,7 @@ void settings_early(void)
     log_state(file_loaded ? "ui init, from the file:" : "ui init, from the image:", boot_mode, mode);
     log_t(7);
     log_s("   t: ui init at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
+    crumb_state(1);                       /* DIAG */
 #ifdef PROF
 #ifdef PROF_UI
     { void prof_mark(const char *); extern int krec_on; extern uint32_t kwin; prof_mark("ui init"); krec_on = 1; kwin = TIMER_E; }
@@ -288,6 +289,7 @@ static void switch_live(int mode)
 
 E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
 {
+    CRUMB();
     unsigned i;
     for (i = 0; i < sizeof settings_actions / sizeof *settings_actions; i++) {
         int g = settings_actions[i].group, k = settings_actions[i].option;
@@ -336,6 +338,7 @@ static const char *theme_text(void)
 
 E_ENTRY int e_settings_provider(void *self, uint32_t type, uint32_t key, void **out)
 {
+    CRUMB();
     int g, k;
     if (key == KEY_THEME_TEXT) { *out = (void *)theme_text(); return 1; }
     if (key == KEY_ACCENT_TEXT) { *out = (void *)accent_labels[theme_accent]; return 1; }

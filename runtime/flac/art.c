@@ -253,6 +253,7 @@ static int art_log;
 int log_flush(void);
 static int __attribute__((used)) gtl_c(uint32_t *r)
 {
+    CRUMB();
     uint8_t *img, *th;
     uint32_t *blk, geo[8], tmp[24], h, w, stride, i;
     int g, logging;
@@ -302,6 +303,7 @@ static struct Bind *bind_of(void *stream)
 /* seek(stream, ?, off_lo, off_hi, whence): 1 = handled (r0 = 0), 0 = run the original */
 static int __attribute__((used)) seek_c(uint32_t *r)
 {
+    CRUMB();
     struct Bind *s;
     uint32_t *blk, g, i;
     s = bind_of((void *)r[0]);
@@ -328,6 +330,7 @@ static int __attribute__((used)) seek_c(uint32_t *r)
 /* read(stream, len, buf, u32 *got, ...): served from the decoded cover */
 static int __attribute__((used)) read_c(uint32_t *r)
 {
+    CRUMB();
     struct Bind *s = bind_of((void *)r[0]);
     uint32_t n;
     int rc;
@@ -788,6 +791,7 @@ static void np_make_bg(const uint8_t *cov565)
 }
 __attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32_t *t)
 {
+    CRUMB();
     static uint16_t src[NP_SIDE * NP_SIDE];
     static uint32_t src_sum;
     static int bg_gen = -1;

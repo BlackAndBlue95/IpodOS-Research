@@ -42,9 +42,10 @@ for l in open(a.syms):
     p = l.split()
     if len(p) == 3: sym[p[2]] = int(p[0], 16)
 E_END = E_BASE + len(e)
+CRASH_ROOM = 0x1000                              # top of the reserve: crash.c's record (last 0x800) and slack for sector-rounded loads
 if a.prof: E_RESERVE = 0xc0000                   # profiler builds: trampolines and counters need more room
-if len(e) > E_RESERVE: E_RESERVE = (len(e) + 0x3ffff) & ~0x3ffff   # Modern icons (sficons_data.h, both versions in the image): the heap starts later
-assert len(e) <= E_RESERVE, 'region E is %d bytes, more than the %d reserved' % (len(e), E_RESERVE)
+if len(e) + CRASH_ROOM > E_RESERVE: E_RESERVE = (len(e) + CRASH_ROOM + 0x3ffff) & ~0x3ffff   # Modern icons (sficons_data.h, both versions in the image): the heap starts later
+assert len(e) + CRASH_ROOM <= E_RESERVE, 'region E is %d bytes, more than the %d reserved' % (len(e), E_RESERVE)
 assert sym['__e_start'] == E_BASE
 
 def off(addr):
@@ -89,6 +90,12 @@ struct.pack_into('<I', img, 0x0c, len(img) - HDR)              # body size, chec
 LIBLOAD = 0x0805d62c             # Apple's library loader
 retarget(0x0804d7c4, LIBLOAD, sym['e_libload_boot'])
 retarget(0x081ae29c, LIBLOAD, sym['e_libload_task'])
+# vector stubs (undef, prefetch abort, data abort, reserved, FIQ) -> e_cpu_exc: crash record, then Apple's reset
+CPU_EXC = 0x0803930c
+for at in (0x0802dd08, 0x0802dd34, 0x0802dd4c, 0x0802dd64, 0x0802dd7c): retarget(at, CPU_EXC, sym['e_cpu_exc'])
+# SWI vector stub -> e_swi: semihosting (RTXCbug's console, Apple's debug prints); stock calls a stub returning 0
+assert rd(0x0804b398) == 0xe3a00000 and rd(0x0804b39c) == 0xe12fff1e
+retarget(0x0802dd1c, 0x0804b398, sym['e_swi'])
 
 if a.hooks == 'all':
     assert a.base == 'stock', '--hooks all needs the stock base'
@@ -128,7 +135,6 @@ if a.hooks == 'all':
         retarget(at, 0x080605c8, sym['e_loc_path'])            # record -> path
     # function entries
     entry_hook(0x08133980, 0xe92d47f0, 0xe24dde31, sym['hk_gtl'])
-    entry_hook(0x081447fc, 0xe92d407f, 0xe1a05000, sym['hk_fmark_reg'])   # frame marker registration: panel FMARK on (panel.c)
     entry_hook(0x0826d8e0, 0xe92d43f8, 0xe1a04000, sym['hk_seek'])
     entry_hook(0x0826d5fc, 0xe92d47f0, 0xe24dd020, sym['hk_read'])
     entry_hook(0x0828a5ac, 0xe92d43f0, 0xe1a04000, sym['hk_parse'])

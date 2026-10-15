@@ -16,6 +16,13 @@ void log_d(int v)
     do { t[i++] = '0' + u % 10; u /= 10; } while (u);
     while (i) log_c(t[--i]);
 }
+int log_tail(char *dst, int n)   /* the last n - 1 bytes, 0-terminated */
+{
+    int i, from = logn > n - 1 ? logn - (n - 1) : 0;
+    for (i = 0; from + i < logn; i++) dst[i] = logb[from + i];
+    dst[i] = 0;
+    return i;
+}
 void log_name(const char *s)    /* printable bytes as is, others as <xx> */
 {
     for (; *s; s++) {
@@ -75,4 +82,19 @@ int log_flush(void)
     vol_delete("FLAC\\rtlog.txt");
     rc = file_write("FLAC\\rtlog.txt", logb, n);
     return rc;
+}
+
+/* DIAG: between ui init and the first frame, the first call of each hook. Memory only (hooks may
+   run inside the file layer); a crash record keeps the log's tail. */
+static int crumb_st;
+static const char *crumb_seen[64];
+static int crumb_n;
+void crumb_state(int s) { crumb_st = s; }
+void crumb(const char *name)
+{
+    int i;
+    if (crumb_st != 1) return;
+    for (i = 0; i < crumb_n; i++) if (crumb_seen[i] == name) return;
+    if (crumb_n < 64) crumb_seen[crumb_n++] = name;
+    log_s("   step: "); log_s(name); log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
 }

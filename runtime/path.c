@@ -80,6 +80,7 @@ static int loc_len(const char *s, int n)
 /* 0x080da098: database load stores a track's location */
 E_ENTRY int e_loc_db(char *t, const char *s, int n)
 {
+    CRUMB();
     int rc, m;
     if (s && (m = loc_len(s, n)) != n) { n = m; path_fixed++; }
     rc = os_loc_db(t, s, n);
@@ -112,6 +113,7 @@ int track_is_flac(const uint8_t *t)
 /* 0x0805f738, 0x080d448c: file layer path {u16; chars} into a record */
 E_ENTRY int e_loc_set(void *p, char *loc, int flag)
 {
+    CRUMB();
     const char *s = (const char *)p + 2;
     int n = 0;
     path_calls_set++;
@@ -125,6 +127,7 @@ E_ENTRY int e_loc_set(void *p, char *loc, int flag)
 /* 0x08048288 and 4 more: record back to a path, written as {u16 0; chars} into a FileRef */
 E_ENTRY int e_loc_path(const char *loc, void *dst)
 {
+    CRUMB();
     uint32_t a;
     const char *s;
     char *d = (char *)dst + 2;

@@ -120,9 +120,9 @@ number the name starts with, else the file's place in its folder in name order; 
 follows (past `" - "`, `". "`), else "Episode N". Length from `mvhd`, audio rate from the `mp4a`
 entry. Records as iTunes writes an episode: title (1), the show as artist (4), album
 `"<show>, Season N"` (3), show (19), `SnnEnn` (20), "MPEG-4 video file" (6), location (2).
-Fields: `+0x2c` and `+0xd8` episode, `+0xd4` season, `+0xd0` media type `0x40` (TV show), `+0xa6`
-remember playback position (an episode without it is rebuilt once), `+0xb1` video, `+0xb2` 2 =
-unplayed. Tests 20 to 22 in
+Fields: `+0x2c` and `+0xd8` episode, `+0xd4` season, `+0xd0` media type `0x40` (TV show), `+0xb1`
+video, `+0xb2` 2 = unplayed. Remember playback position (`+0xa6`) stays off: entries with it set
+bootlooped the device once an episode had been played (R66). Tests 20 to 22 in
 `test_incr.py`. Encoding: `tools/video/ipodenc.sh` (H.264 Baseline 3.0, 640x480 at most, AAC).
 
 ### Safety
@@ -190,8 +190,9 @@ the player fills its pool and sits on a black screen at 0:00; menus don't need t
 
 Apple's bootloader turns the line on. Ours uses Rockbox's panel setup, which on panel types 2/3
 (ILI9326, PDAT6 bits 4-5; this iPod is type 2) writes R090h = `0x0021`: FMKM (bit 15, output
-enable) off. An entry hook on `0x081447fc` (`hk_fmark_reg`) writes R090h = `0x8021` whenever a
-semaphore is registered (first screen, each video start, after a resume): wait for the controller
+enable) off. Turning it on did not fix video (R66 wrote R090h = `0x8021`, still black), so the
+hook is no longer installed and `panel.c` is not built; it is kept for the next video attempt. It was
+an entry hook on `0x081447fc` (`hk_fmark_reg`) writing R090h = `0x8021` whenever a semaphore is registered (first screen, each video start, after a resume): wait for the controller
 (`0x38300000`) to idle, command mode `0x80000da8`, index `0x090`, data, index `0x202` again (GRAM
 write, so a preempted driver still lands pixels), previous mode back. Interrupts are off for those
 microseconds; every wait gives up after 2 ms and leaves the register as it was (logged once).
@@ -337,6 +338,41 @@ Tests (no iPod needed):
 - `runtime/host/rules_parity.py`, `runtime/host/sun_test.c`, `runtime/flac/hostr.c` (decoder on the Mac)
 
 The device log is `FLAC\rtlog.txt` (previous run in `rtlog.prev.txt`).
+
+CPU exceptions (`runtime/crash.c`): the IRAM vectors (undef 0x04, prefetch 0x0c, data abort 0x10,
+reserved 0x14, FIQ 0x1c) reach stubs at `0x0802dcfc..` that call `0x0803930c(regs, kind)`, Apple's
+CPU_exception_handler; it resets at once (`0x0835d028`: watchdog off, SWRCON = 0xaa5). `e_cpu_exc`
+first writes a record 0x800 below the heap base (registers, SPSR, banked sp/lr, DFSR/IFSR/FAR, 1 KB
+of stack, the last 512 bytes of the log), cleans it from the D-cache, then jumps to the reset
+`0x0835d028` (skipping the handler's svc, which would fault again on a broken SVC stack).
+Bootloader BSS (0x08800000..0x088aa440) and the staged image (0x0a000000..) miss it. The next boot
+logs `CRASH in the previous run` with return-address candidates. Emulator test: `EDEFS=-DCRASH_TEST`
+(undefined instruction after the first frame). DRAM keeping its contents across the reset is
+verified only in QEMU.
+
+RTXCbug (`runtime/semihost.c`): Apple left the Quadros RTXC v3.2b kernel debugger in the OS. Its
+task (0x0835d424, priority 0) waits on semaphore 56, which nothing in the OS signals; on wake it
+blocks every other task (KS_block 1..n), runs the menu 0x082b4248, and unblocks on exit. All its
+I/O is ARM semihosting (`svc 0x123456`): output SYS_WRITE0, input SYS_OPEN ":tt" + SYS_READ
+(0x082cb834), the `-- More --` pager SYS_READC. The SWI stub's call (0x0802dd1c) goes to `e_swi`,
+which keeps output in a buffer (128 KB during a session, 2 KB otherwise; overflow is cut and
+marked) and answers reads from a script. Usage: put
+RTXCbug input lines in `FLAC\rtxcbug.txt`; at the first frame (and after a USB session) it is
+deleted, run through `KS_signal(56)`, and the transcript lands in `FLAC\semihost.txt` (a line
+"rtxcbug: ..." in rtlog). Without a script, Apple's prints since the last write (if any) go to
+`FLAC\semihost-os.txt`, so a transcript is never overwritten by them. After the script, `x` is fed, so a session always ends. From E code:
+`rtxcbug_run(script, n)` (the task, everything else blocked) or `rtxcbug_cmds(script, n)` (the
+object menu called in place with IRQs off, nothing blocked; `! $ g x` refused, `u` ends it).
+Main menu: `K` objects, `G`/`X` leave. Object menu (`H` lists it): `T` tasks (number, name,
+priority, CPU time, state, what it waits on, timeout), `S` semaphores (name, PEND/WAIT/DONE,
+waiter; names look shifted, the debugger's own sem 56 shows as S_DISPLAY and S_RTXCBUG is 53),
+`Q` queues (depth, worst, count), `M` mailboxes, `R` resources (lock counts, conflicts, owner;
+~1000 rows), `C` clock (1000 Hz tick, the timer list), `K` stack use per task plus the kernel
+stack and worst interrupt nesting, `#` then a task number: its saved registers (tasks run in
+SVC32), `Z` zeroes partition/queue/resource statistics, `$` task manager (suspend, resume,
+terminate, execute, priority, block, unblock, time slice: changes the kernel, use with care),
+`U` back, `X` leave. QEMU's iPod machine answers semihosting itself unless started with
+`-M iPod-Classic,semihosting=off`.
 
 ## 14. Open items
 - `art.c` trace legend partly stale (see §6).

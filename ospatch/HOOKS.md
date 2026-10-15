@@ -40,6 +40,8 @@ Not applied in v18: v17's PCM reader kill at 0x081ff0ac and the stub over 0x0827
 | 0x08048288, 0x080cc33c, 0x080d7fa0, 0x080d7fdc, 0x080da17c | bl 0x080605c8 (record to path) | `e_loc_path` |
 | 0x0804d7c4 (boot) | bl 0x0805d62c library load | `e_libload_boot` |
 | 0x081ae29c (TMusicLoadingTask::Run, disk-mode reload) | bl 0x0805d62c library load | `e_libload_task` |
+| 0x0802dd08, 0x0802dd34, 0x0802dd4c, 0x0802dd64, 0x0802dd7c (vector stubs: undef, prefetch abort, data abort, reserved, FIQ) | bl 0x0803930c CPU_exception_handler (semihost print, then reset via SWRCON 0x3c500050) | `e_cpu_exc` (crash record, then Apple's reset 0x0835d028) |
+| 0x0802dd1c (SWI vector stub, regs = caller's r0-r12, lr) | bl 0x0804b398 (`mov r0,#0; bx lr`, asserted) | `e_swi` (semihosting: RTXCbug console, Apple's debug prints) |
 
 ## Function entries: `b E_hook` over the first instruction (E runs it and returns to entry+4)
 | Entry | First word (asserted, second word also checked) | E hook | Was |
