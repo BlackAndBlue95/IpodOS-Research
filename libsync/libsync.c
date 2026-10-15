@@ -340,6 +340,7 @@ static int key_is(const uint8_t *k, int kn, const char *name)
     return i == kn && !name[i];
 }
 
+static uint32_t g_fch, g_fbps, g_fmaxbs;   /* the last STREAMINFO read: channels, bits, largest block */
 /* As flacsync.py read_flac(): STREAMINFO and the first Vorbis comment of each tag, from the
    metadata blocks that end within the first 1 MB. */
 static int read_flac(const char *path, uint32_t *sr, uint64_t *ns, struct tags *t)
@@ -364,6 +365,9 @@ static int read_flac(const char *path, uint32_t *sr, uint64_t *ns, struct tags *
                 for (i = 10; i < 18; i++) x = x << 8 | si[i];
                 *sr = (uint32_t)(x >> 44);
                 *ns = x & ((1ULL << 36) - 1);
+                g_fch = (uint32_t)((x >> 41) & 7) + 1;
+                g_fbps = (uint32_t)((x >> 36) & 31) + 1;
+                g_fmaxbs = (uint32_t)si[2] << 8 | si[3];
                 got = 1;
             }
         } else if ((h[0] & 0x7f) == 4 && p + 4 + l <= lim && !vc && l >= 8) {
@@ -650,6 +654,11 @@ static int scan(int rl, int depth)
         LS_MEMCPY(p, g_rel, rl);
         p[rl] = '/';
         LS_MEMCPY(p + rl + 1, DE[i].name, n + 1);
+        /* an 8.3 name lists as its upper-case short name (S01E01.M4V), and the video player never
+           opens a location ending .M4V; the file system ignores case, so the extension goes lower */
+#ifndef LS_KEEP_EXT_CASE                 /* emulator test of the OS patch alone (videotest.py) */
+        if (g_video) for (char *x = p + rl + 1 + n - 4; *x; x++) if (*x >= 'A' && *x <= 'Z') *x += 32;
+#endif
         if (fadd(p, DE[i].size, DE[i].mtime, first + 1) < 0) return -1;
         if (!first++ && OP->album_cb && !g_video) OP->album_cb(OP->cb_ctx, g_rel, p, DE + start, DET - start);
     }
@@ -927,13 +936,16 @@ static int album_for(const uint8_t *al, int aln, const uint8_t *ar, int arn, uin
 
 /* ---------------- TV episodes ---------------- */
 static uint32_t b32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-/* length (mvhd) and audio rate (stsd mp4a) */
-static int read_mp4(const char *path, uint32_t *ms, uint32_t *sr)
+/* what the iPod's video player needs to know: the sample entries of the video and sound tracks */
+struct mp4info { uint32_t vcodec, w, h, prof, lvl, acodec; };
+/* length (mvhd), audio rate (stsd mp4a) and, into vi, the codecs, frame size, H.264 profile and level */
+static int read_mp4(const char *path, uint32_t *ms, uint32_t *sr, struct mp4info *vi)
 {
-    uint8_t b[64];
+    uint8_t b[100];
     long p = 0, end;
     int fd = ls_open_r(path), moov = 0;
     *ms = 0; *sr = 0;
+    LS_MEMSET(vi, 0, sizeof *vi);
     if (fd < 0) return -1;
     end = ls_fsize(fd);
     while (p + 8 <= end) {
@@ -954,8 +966,24 @@ static int read_mp4(const char *path, uint32_t *ms, uint32_t *sr)
             uint64_t ts = b[0] ? b32(b + 20) : b32(b + 12);
             uint64_t d = b[0] ? (uint64_t)b32(b + 24) << 32 | b32(b + 28) : b32(b + 16);
             if (ts) *ms = (uint32_t)(d * 1000 / ts);
-        } else if (!LS_MEMCMP(b + 4, "stsd", 4) && l >= 52 && ls_seek(fd, p + 16) == p + 16 && ls_read(fd, b, 36) == 36) {
-            if (!LS_MEMCMP(b + 4, "mp4a", 4)) *sr = b32(b + 32) >> 16;
+        } else if (!LS_MEMCMP(b + 4, "stsd", 4) && l >= 52 && ls_seek(fd, p + 16) == p + 16) {
+            /* the first sample entry: sound {..., rate at +32}, visual {..., width +32, height +34,
+               child boxes from +86, avcC: version, profile, compatibility, level} */
+            long want = (long)l - 16 > (long)sizeof b ? (long)sizeof b : (long)l - 16;
+            long got = ls_read(fd, b, (int)want);
+            uint32_t ty = got >= 8 ? b32(b + 4) : 0;
+            if (ty == 0x6d703461) {                                   /* mp4a */
+                vi->acodec = ty;
+                if (got >= 36) *sr = b32(b + 32) >> 16;
+            } else if (ty == 0x61766331 || ty == 0x61766333 || ty == 0x6d703476 ||   /* avc1 avc3 mp4v */
+                       ty == 0x68766331 || ty == 0x68657631) {         /* hvc1 hev1 */
+                vi->vcodec = ty;
+                if (got >= 36) { vi->w = (uint32_t)b[32] << 8 | b[33]; vi->h = (uint32_t)b[34] << 8 | b[35]; }
+                if (got >= 98 && !LS_MEMCMP(b + 90, "avcC", 4)) { vi->prof = b[95]; vi->lvl = b[97]; }
+            } else if (ty == 0x61632d33 || ty == 0x65632d33 || ty == 0x616c6163 ||   /* ac-3 ec-3 alac */
+                       ty == 0x4f707573 || ty == 0x664c6143 || ty == 0x2e6d7033) {   /* Opus fLaC .mp3 */
+                if (!vi->acodec) vi->acodec = ty;
+            }
         }
         p += (long)l;
     }
@@ -1009,9 +1037,54 @@ static void tv_name(const char *path, struct tvname *v)
     v->title = last + i; v->titlen = n - i;
     if (!i) { v->title = last; v->titlen = n; }
 }
+/* a file the iPod would not play: one line in the log (sync: ...), and no entry. 0, as a skip */
+static int not_playable(const struct fent *f, const char *why, int add)
+{
+    char m[220];
+    size_t l = LS_STRLEN(f->path);
+    LS_SNPRINTF(m, sizeof m, "%s%s: %s%s  <-- CHECK", l > 90 ? "..." : "", f->path + (l > 90 ? l - 90 : 0),
+                why, add ? "" : ", not added");
+    ls_status(m);
+    return 0;
+}
+static const char *fourcc(uint32_t v, char *s)
+{
+    for (int i = 0; i < 4; i++) { char c = (char)(v >> (24 - 8 * i)); s[i] = c >= 32 && c < 127 ? c : '?'; }
+    s[4] = 0;
+    return s;
+}
+/* The iPod Classic plays H.264 Baseline up to level 3.0 or MPEG-4 Simple, at most 640x480,
+   with AAC sound; a file outside that gets the player's black screen at 0:00 */
+static int video_ok(const struct fent *f, const struct mp4info *vi)
+{
+    char why[96], cc[5];
+    if (!vi->vcodec) return 1;                              /* no sample entry read: no judgement */
+    if (vi->vcodec != 0x61766331 && vi->vcodec != 0x6d703476) {
+        LS_SNPRINTF(why, sizeof why, "video codec %s (the iPod plays H.264 avc1 or MPEG-4 mp4v)", fourcc(vi->vcodec, cc));
+        return not_playable(f, why, 0);
+    }
+    if (vi->w > 640 || vi->h > 480) {
+        LS_SNPRINTF(why, sizeof why, "%ux%u (the iPod plays up to 640x480)", (unsigned)vi->w, (unsigned)vi->h);
+        return not_playable(f, why, 0);
+    }
+    if (vi->vcodec == 0x61766331 && vi->prof && vi->prof != 66) {
+        LS_SNPRINTF(why, sizeof why, "H.264 profile %u (the iPod plays Baseline, 66)", (unsigned)vi->prof);
+        return not_playable(f, why, 0);
+    }
+    if (vi->vcodec == 0x61766331 && vi->lvl > 30) {
+        LS_SNPRINTF(why, sizeof why, "H.264 level %u.%u, above 3.0: may not play", (unsigned)vi->lvl / 10, (unsigned)vi->lvl % 10);
+        not_playable(f, why, 1);
+    }
+    if (vi->acodec && vi->acodec != 0x6d703461) {
+        LS_SNPRINTF(why, sizeof why, "sound %s (the iPod plays AAC with video): silent", fourcc(vi->acodec, cc));
+        not_playable(f, why, 1);
+    }
+    return 1;
+}
 static int make_video(const struct fent *f, uint32_t id, const struct trk *old)
 {
     struct tvname v;
+    struct mp4info vi;
     char album[PATHMAX], epid[16], title[24];
     uint32_t ms, sr, aid = 0, n, hl = tmpl_hl;
     int albn, epn, ttn;
@@ -1022,7 +1095,9 @@ static int make_video(const struct fent *f, uint32_t id, const struct trk *old)
     static const char ftype[] = "MPEG-4 video file";
 
     LS_SNPRINTF(g_path, sizeof g_path, "%s%s", OP->root, f->path);
-    if (read_mp4(g_path, &ms, &sr) < 0)
+    if (read_mp4(g_path, &ms, &sr, &vi) < 0)
+        return 0;
+    if (!video_ok(f, &vi))
         return 0;
     tv_name(f->path, &v);
     if (!v.episode) v.episode = (uint32_t)f->ord;   /* no number in the name: its place in the folder */
@@ -1114,6 +1189,15 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
     LS_SNPRINTF(g_path, sizeof g_path, "%s%s", OP->root, f->path);
     if (read_flac(g_path, &sr, &ns, &tg) < 0)
         return 0;
+    {   /* what the decoder takes (flacblob.c fr_setup): 8-192 kHz (decimated to 48 kHz at most),
+           4-24 bits, 1-8 channels, blocks of 16 samples or more */
+        char why[80];
+        if (sr < 8000 || sr > 192000) LS_SNPRINTF(why, sizeof why, "%u Hz (the player takes 8-192 kHz)", (unsigned)sr);
+        else if (g_fbps < 4 || g_fbps > 24) LS_SNPRINTF(why, sizeof why, "%u bits (the player takes 4-24)", (unsigned)g_fbps);
+        else if (g_fmaxbs < 16) LS_SNPRINTF(why, sizeof why, "block size %u (the player takes 16 or more)", (unsigned)g_fmaxbs);
+        else why[0] = 0;
+        if (why[0]) return not_playable(f, why, 0);
+    }
     ms = (uint32_t)(ns * 1000 / sr);
     kbps = (uint32_t)((uint64_t)f->size * 8 / (ms ? ms : 1));
 

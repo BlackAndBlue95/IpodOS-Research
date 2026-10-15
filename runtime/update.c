@@ -78,7 +78,7 @@ static int fail(const char *what, int rc)
 /* progress in IRAM past the bootloader's mailbox words (0x2203ff00..0x2203ff63): survives the
    watchdog reset, so the boot after a stuck update can say how far it got */
 #define UPD_PROGRESS ((volatile uint32_t *)0x2203ff80)   /* 'UPDP', chunk, chunks, time us */
-void fatdir_release(void);
+void fatdir_close(void);
 
 /* called from libload() before anything else uses the disk */
 void update_check(void)
@@ -98,7 +98,7 @@ void update_check(void)
     }
     n = file_read(UPD_FILE, hdr, sizeof hdr, &size);
     if (n < (int)sizeof hdr) return;                                   /* no update file */
-    fatdir_release();                  /* our raw handle is closed while the updater has the card */
+    fatdir_close();                    /* our raw handle is closed while the updater has the card */
     updscreen_begin();
     log_s("== update: "); log_s(UPD_FILE); log_s(" found, "); log_d(size); log_s(" bytes, progress bar ");
     log_s(updscreen_ok() ? "drawn\n" : "off (LCD interface did not answer)\n");

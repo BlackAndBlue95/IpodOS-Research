@@ -66,13 +66,93 @@ static inline void wr32(uint8_t *p, uint32_t v) { *(volatile uint32_t *)p = v; }
    state 0), runs the glyph pass for them, and leaves the rest to the timer. */
 uint32_t pb_k __attribute__((used)) = PB_K;
 extern uint32_t pb_lazy;
+
+/* text element font (0x0817ab78): a NULL font instance from 0x0826a824 (a Modern font that cannot
+ * give that style) skips the element, as a 0 result does, instead of calling through address 0 */
+uint32_t font_skipped;
+__attribute__((naked, section(".text.entry"), used)) void e_font_inst(void)
+{
+    __asm__ volatile(
+        "ldr r0, [sp]\n"
+        "bic r0, r0, #1\n"
+        "cmp r0, #0\n"
+        "ldrne pc, 1f\n"                 /* 0x0817ab80: ldr r1, [r0]; the method call */
+        "ldr r1, 3f\n ldr r0, [r1]\n add r0, r0, #1\n str r0, [r1]\n"
+        "mov r0, #0\n"
+        "ldr pc, 2f\n"                   /* 0x0817ab8c: movs r4, r0 -> element skipped */
+        "1: .word 0x0817ab80\n"
+        "2: .word 0x0817ab8c\n"
+        "3: .word font_skipped\n");
+}
+
+/* glyph member call (0x080e2810 -> 0x080a92f8): a font object that is not set up yet gives 0, the
+ * pass at the end of the pre-build does that text */
+uint32_t glyph_skipped;
+__attribute__((naked, section(".text.entry"), used)) void e_glyph_call(void)
+{
+    __asm__ volatile(
+        "push {r4, r5}\n"
+        "ldr r4, [r2]\n"
+        "bic r4, r4, #1\n"               /* the object */
+        "cmp r4, #0x08000000\n blo 9f\n"
+        "cmp r4, #0x0c000000\n bhs 9f\n"
+        "ldr r5, 3f\n ldr r5, [r5, #4]\n" /* member pointer's this-adjust word */
+        "tst r5, #1\n beq 8f\n"           /* not virtual: no vtable to check */
+        "add r4, r4, r5, asr #1\n"
+        "ldr r4, [r4]\n"                  /* vtable */
+        "tst r4, #3\n bne 9f\n"
+        "cmp r4, #0x08000000\n blo 9f\n"
+        "cmp r4, #0x0c000000\n bhs 9f\n"
+        "8: pop {r4, r5}\n"
+        "ldr pc, 1f\n"
+        "9: ldr r4, 2f\n ldr r5, [r4]\n add r5, r5, #1\n str r5, [r4]\n"
+        "pop {r4, r5}\n"
+        "mov r0, #0\n"
+        "bx lr\n"
+        "1: .word 0x080a92f8\n"
+        "2: .word glyph_skipped\n"
+        "3: .word 0x083f86ec\n");
+}
+/* The glyph pass renders, for each font instance in the list [0x089cc8dc], every character its
+ * renderer (instance+0x98) has pending. At boot only instances 1 and 4 (creation order with the
+ * English UI: the main menu's rows and preview label) are done, ~690 of ~1670 glyphs; the others
+ * keep their pending characters for the background build's pass (one instance per tick). Apple's
+ * full pass instead with BOOT_GLYPHS 0, or when the previous run of this build crashed. */
+#ifndef BOOT_GLYPHS
+#define BOOT_GLYPHS 0x12
+#endif
+static int pb_glyph_some(uint8_t *b, uint32_t mask)
+{
+    extern int crash_prev;
+    void **list = *(void ***)0x089cc8dc;
+    uint32_t n, i;
+    if (!mask || crash_prev || !list || (n = ((uint32_t *)list)[1]) < 5) return 0;
+    for (i = 0; i < n && i < 32; i++) {
+        uint8_t *e = 0, *f;
+        void **vt;
+        if (!(mask >> i & 1)) continue;
+        if (!((int (*)(void *, uint32_t, void *))(*(void ***)list)[0x3c / 4])(list, i, &e) || !e) continue;
+        if (!(f = *(uint8_t **)(e + 0x98))) continue;
+        vt = *(void ***)f;
+        ((void (*)(void *))vt[0x2c / 4])(f);
+        ((void (*)(void *, int, void *))vt[0x1c / 4])(f, 0, b + 0x120);
+    }
+    wr32(b + 0x120, rd32(b + 0x120) + ((uint32_t (*)(int))0x0826a4e4)(0));   /* per-font-file step, as the pass ends */
+    return 1;
+}
 static void __attribute__((used)) pb_glyphs_now(uint8_t *b)
 {
-    uint32_t tg = TIMER_E;
+    uint32_t rc_drive_ms(void);
+    uint32_t tg = TIMER_E, dg = rc_drive_ms();
+    int some;
     wr32(b + 0x11c, 0);
-    ((int (*)(void *, int, int))0x081ae8c4)(b, 0, 0);
+    if (!(some = pb_glyph_some(b, BOOT_GLYPHS))) ((int (*)(void *, int, int))0x081ae8c4)(b, 0, 0);
     wr32(b + 0x11c, 0);
-    log_s("   ui: boot glyph pass "); log_d((int)((TIMER_E - tg) / 1000)); log_s(" ms\n");
+    log_s("   ui: boot glyph pass");
+    { extern int crash_prev; if (some) log_s(" (main menu fonts)"); else if (crash_prev) log_s(" (all fonts: the previous run crashed)"); }
+    log_c(' '); log_d((int)((TIMER_E - tg) / 1000)); log_s(" ms ("); log_d((int)(rc_drive_ms() - dg)); log_s(" ms of drive reads)");
+    if (glyph_skipped) { log_s(", "); log_d((int)glyph_skipped); log_s(" characters skipped (font not ready)"); }
+    log_c('\n');
     log_s("   ui: first "); log_d((int)rd32(b + 0x114)); log_s(" screens and their glyphs built at "); log_d((int)(TIMER_E / 1000)); log_s(" ms, the rest in the background\n");
 }
 __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
@@ -156,6 +236,7 @@ static void __attribute__((used)) pb_done_c(void)
         ((void (*)(void *, int))0x0817cd30)(((void *(*)(int))0x0817d524)(0), 1);
     } else log_c('\n');
     log_flush();
+    { void fatdir_release(void); fatdir_release(); }   /* boot reads done: the drive may power down now */
 }
 __attribute__((naked, section(".text.entry"), used)) void e_pb_done(void)
 {
@@ -169,21 +250,14 @@ __attribute__((naked, section(".text.entry"), used)) void e_pb_done(void)
         "2: .word 0x081aeb20\n");
 }
 
-/* ---- boot read cache for the resource volume ----
- * The file layer keeps one cached block per open file (0x0826cdb8), and glyph rendering jumps
- * between a font's tables, so the same 8-64 KB blocks of the resource volume (drive 1, the
- * firmware partition's fonts and resources, never written in normal use) are read again and
- * again while the first screen is built. The device read (0x082bb36c: drive, lba, buf, count,
- * arg5 -> 1 ok, 0 failed) now comes here: drive 1 reads are served from a copy when the same (lba, count)
- * was read before. Active from app init until the first frame, then freed; a drive 1 write
- * (0x082bb418) empties it. */
-#define RC_MAX     1024
-#define RC_BYTES   (6u << 20)
-struct rc_ent { uint32_t lba, count; uint8_t *data; };
-static struct rc_ent rc[RC_MAX];
-static int rc_n, rc_next, rc_on;
-static uint32_t rc_bytes, rc_hits, rc_miss, rc_saved, rc_calls, rc_d1, rc_last_d, rc_t_d1, rc_t_other, rc_kb_d1;
-uint32_t rc_us;
+/* ---- boot reads ----
+ * The device read (0x082bb36c: drive, lba, buf, count, arg5 -> 1 ok, 0 failed) and write
+ * (0x082bb418) come here; from app init to the first frame their time is counted for the log. */
+static inline uint32_t irq_off(void) { uint32_t c, t; __asm__ volatile("mrs %0, cpsr\n orr %1, %0, #0xc0\n msr cpsr_c, %1" : "=r"(c), "=r"(t)); return c; }
+static inline void irq_on(uint32_t c) { __asm__ volatile("msr cpsr_c, %0" :: "r"(c)); }
+static int rc_on;
+static uint32_t rc_calls, rc_d1, rc_t_d1, rc_t_other, rc_kb_d1;
+uint32_t rc_drive_ms(void) { return (rc_t_d1 + rc_t_other) / 1000; }   /* device read time so far, for the step lines */
 __attribute__((naked, used)) static int devread_orig(uint32_t d, uint32_t lba, void *buf, uint32_t n, uint32_t a5)
 {
     __asm__ volatile("push {r3, r4, r5, r6, r7, r8, r9, lr}\n ldr pc, 1f\n 1: .word 0x082bb370\n");
@@ -192,50 +266,170 @@ __attribute__((naked, used)) static int devwrite_orig(uint32_t d, uint32_t lba, 
 {
     __asm__ volatile("push {r3, r4, r5, r6, r7, r8, r9, lr}\n ldr pc, 1f\n 1: .word 0x082bb41c\n");
 }
-static void rc_clear(void)
+
+/* Read-ahead from the font scan to the first frame: the glyph pass reads the CJK fallback fonts in
+ * ~440 scattered 8 KB pieces, each a seek; 128 KB blocks are read once and kept instead. Only the
+ * volumes' data areas are cached (never the FAT, FSInfo or root folder); a fill that overlaps a
+ * write is dropped, and the first fills are checked against a direct read. */
+#define RA_BYTES   (128u << 10)
+#define RA_MAX     48
+#define RA_CHECK   8
+#define RA_FAILED  0x80000000u    /* key flag: this block could not be read, read as asked */
+#ifndef RA_UNIT
+#define RA_UNIT    512            /* 0x082bb36c counts 512-byte sectors on every drive: its device layer
+                                     0x0828c08c shifts by 9 and splits into the drive's 4 KB blocks */
+#endif
+struct ra_ent { volatile uint32_t key; uint8_t *raw; };      /* key: drive << 28 | block + 1, 0 = none */
+static struct ra_ent ra[RA_MAX];
+static volatile int ra_n, ra_on, ra_busy;
+static volatile uint32_t ra_gen;                             /* writes so far */
+static uint32_t ra_area0[2], ra_hits, ra_fills, ra_kb, ra_full, ra_checked, ra_bad, ra_dropped, ra_failed;
+static inline uint8_t *ra_data(const struct ra_ent *e) { return (uint8_t *)(((uint32_t)e->raw + 31) & ~31u); }
+static void ra_dcache(const void *p, uint32_t n)             /* clean + invalidate around a device read */
+{
+    uint32_t a = (uint32_t)p & ~31u, end = (uint32_t)p + n;
+    for (; a < end; a += 32) __asm__ volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(a) : "memory");
+    __asm__ volatile("mov r0, #0\n mcr p15, 0, r0, c7, c10, 4" ::: "r0", "memory");
+}
+static uint32_t ra_time(uint32_t d, uint32_t t0) { uint32_t t = TIMER_E - t0; if (d == 1) rc_t_d1 += t; else rc_t_other += t; return t; }
+/* first sector of the volume's data area (after reserved sectors, FATs and a FAT16 root folder),
+   from its boot sector; 0xffffffff: unknown, nothing is cached */
+static uint32_t ra_area(uint32_t d, uint32_t a5)
+{
+    uint8_t *raw, *b;
+    uint32_t bps, res, nf, ent, fsz, a = 0xffffffffu, t;
+    if (ra_area0[d]) return ra_area0[d];
+    ra_area0[d] = 0xffffffffu;
+    if (!(raw = os_malloc(RA_UNIT + 32))) return a;
+    b = (uint8_t *)(((uint32_t)raw + 31) & ~31u);
+    ra_dcache(b, RA_UNIT);
+    t = TIMER_E;
+    if (devread_orig(d, 0, b, 1, a5) == 1) {
+        ra_dcache(b, RA_UNIT);
+        bps = b[11] | b[12] << 8; res = b[14] | b[15] << 8; nf = b[16]; ent = b[17] | b[18] << 8;
+        fsz = b[22] | b[23] << 8;
+        if (!fsz) fsz = b[36] | b[37] << 8 | b[38] << 16 | (uint32_t)b[39] << 24;
+        if (b[510] == 0x55 && b[511] == 0xaa && bps >= 512 && bps <= 4096 && !(bps & (bps - 1)) && res && nf && nf <= 2 && fsz)
+            a = (res + nf * fsz + (ent * 32 + bps - 1) / bps) * (bps / RA_UNIT);
+    }
+    ra_time(d, t);
+    os_free(raw);
+    return ra_area0[d] = a;
+}
+int e_memcmp(const void *a, const void *b, size_t n);        /* ossync.c */
+void ra_start(void) { if (rc_on && !ra_bad) ra_on = 1; }
+static volatile int ra_free_due;
+static void ra_free_all(void)
 {
     int i;
-    for (i = 0; i < rc_n; i++) if (rc[i].data) os_free(rc[i].data);
-    memset(rc, 0, sizeof rc); rc_n = rc_next = 0; rc_bytes = 0;
+    for (i = 0; i < ra_n; i++) { ra[i].key = 0; if (ra[i].raw) os_free(ra[i].raw); ra[i].raw = 0; }
+    ra_n = 0;
 }
-void rc_start(void) { rc_clear(); rc_on = 1; rc_hits = rc_miss = rc_saved = 0; }
+/* the blocks are freed now, or by the last reader still inside ra_read when it leaves */
+static void ra_stop(void)
+{
+    uint32_t c;
+    int now;
+    ra_on = 0;
+    c = irq_off(); now = !ra_busy; if (!now) ra_free_due = 1; irq_on(c);
+    if (now) ra_free_all();
+}
+static void ra_drop(struct ra_ent *e, uint32_t key)          /* an unpublished block: freed, key kept as a marker */
+{
+    if (e->raw) os_free(e->raw);
+    e->raw = 0; e->key = key;
+}
+/* 1: served from a block, 0: not handled (the caller reads as before) */
+static int ra_read(uint32_t d, uint32_t lba, void *buf, uint32_t n, uint32_t a5)
+{
+    uint32_t per = RA_BYTES / RA_UNIT, blk, off, key, c, k, m, t, gen;
+    struct ra_ent *e;
+    int i;
+    if (d > 1) return 0;
+    blk = lba / per; off = lba % per;
+    if (off + n > per || blk >= 0x0fffffff || blk * per < ra_area(d, a5)) return 0;
+    key = d << 28 | (blk + 1);
+    for (i = 0; i < ra_n; i++) {
+        if (ra[i].key == key) { memcpy(buf, ra_data(&ra[i]) + off * RA_UNIT, n * RA_UNIT); ra_hits++; return 1; }
+        if (ra[i].key == (key | RA_FAILED)) return 0;
+    }
+    c = irq_off(); i = ra_n < RA_MAX ? ra_n++ : -1; irq_on(c);
+    if (i < 0) { ra_full++; return 0; }
+    e = &ra[i];
+    if (!(e->raw = os_malloc(RA_BYTES + 32))) { ra_drop(e, key | RA_FAILED); ra_failed++; return 0; }
+    gen = ra_gen;
+    ra_dcache(ra_data(e), RA_BYTES);
+    t = TIMER_E;
+    for (k = 0; k < per; k += m) {
+        m = per - k > 128 ? 128 : per - k;
+        if (devread_orig(d, blk * per + k, ra_data(e) + k * RA_UNIT, m, a5) != 1) break;
+    }
+    ra_time(d, t);
+    if (k < per) { ra_drop(e, key | RA_FAILED); ra_failed++; return 0; }   /* past the volume's end */
+    ra_dcache(ra_data(e), RA_BYTES);
+    if (ra_gen != gen) { ra_drop(e, 0); ra_dropped++; return 0; }        /* a write during the fill */
+    if (ra_checked < RA_CHECK) {
+        t = TIMER_E; c = devread_orig(d, lba, buf, n, a5); ra_time(d, t);
+        if (c != 1) { ra_drop(e, 0); return 0; }
+        if (e_memcmp(buf, ra_data(e) + off * RA_UNIT, n * RA_UNIT)) { ra_drop(e, 0); ra_on = 0; ra_bad++; return 1; }
+        ra_checked++;
+    } else memcpy(buf, ra_data(e) + off * RA_UNIT, n * RA_UNIT);
+    e->key = key;
+    ra_fills++; ra_kb += RA_BYTES >> 10;
+    return 1;
+}
+static void ra_written(uint32_t d, uint32_t lba, uint32_t n)
+{
+    uint32_t per = RA_BYTES / RA_UNIT, b0, b1, c;
+    int i;
+    c = irq_off(); ra_gen++; irq_on(c);
+    if (d > 1 || !n) return;
+    b0 = lba / per; b1 = (lba + n - 1) / per;
+    for (i = 0; i < ra_n; i++) {
+        uint32_t k = ra[i].key;
+        if (k && !(k & RA_FAILED) && k >> 28 == d && (k & 0x0fffffff) - 1 >= b0 && (k & 0x0fffffff) - 1 <= b1) ra[i].key = 0;
+    }
+}
+
+void rc_start(void) { rc_on = 1; }
 void rc_stop(void)
 {
     if (!rc_on) return;
     rc_on = 0;
-    log_s("   read cache: "); log_d((int)rc_hits); log_s(" hits ("); log_d((int)(rc_saved >> 10)); log_s(" KB not re-read), ");
-    log_d((int)rc_miss); log_s(" misses, "); log_d(rc_n); log_s(" blocks kept, "); log_d((int)(rc_bytes >> 10)); log_s(" KB; calls "); log_d((int)rc_calls); log_s(", drive 1 "); log_d((int)rc_d1);
+    log_s("   boot reads: calls "); log_d((int)rc_calls); log_s(", drive 1 "); log_d((int)rc_d1);
     { extern uint32_t pmu_hits, pmu_miss; log_s("; PMU cache "); log_d((int)pmu_hits); log_s(" hits, "); log_d((int)pmu_miss); log_s(" reads"); }
     log_s("; device time: drive 1 "); log_d((int)(rc_t_d1 / 1000)); log_s(" ms for "); log_d((int)rc_kb_d1); log_s(" KB, other drives "); log_d((int)(rc_t_other / 1000)); log_s(" ms\n");
-    rc_clear();
+    log_s("   read-ahead: "); log_d((int)ra_hits); log_s(" reads served from "); log_d((int)ra_fills); log_s(" blocks ("); log_d((int)ra_kb);
+    log_s(" KB), "); log_d((int)ra_full); log_s(" read directly when full, "); log_d((int)ra_failed); log_s(" failed, ");
+    log_d((int)ra_dropped); log_s(" dropped for a write; "); log_d((int)ra_checked); log_s(" checked against the disk");
+    if (ra_bad) log_s(", MISMATCH: read-ahead turned off  <-- CHECK");
+    log_c('\n');
+    ra_stop();
 }
 __attribute__((used, section(".text.entry"))) int e_devread(uint32_t d, uint32_t lba, void *buf, uint32_t n, uint32_t a5)
 {
-    int i, rc_rc;
-    uint32_t sz = n * 512;
-    rc_calls++; rc_last_d = d; if (d == 1) rc_d1++;
-    if (rc_on && d == 1) {
-        for (i = 0; i < rc_n; i++)
-            if (rc[i].lba == lba && rc[i].count == n && rc[i].data) {
-                memcpy(buf, rc[i].data, sz); rc_hits++; rc_saved += sz; return 1;
-            }
+    int rc_rc;
+    uint32_t c, t;
+    rc_calls++; if (d == 1) rc_d1++;
+    if (ra_on) {
+        c = irq_off(); ra_busy++; irq_on(c);
+        rc_rc = ra_on && ra_read(d, lba, buf, n, a5);
+        { int last; c = irq_off(); last = !--ra_busy && ra_free_due; if (last) ra_free_due = 0; irq_on(c); if (last) ra_free_all(); }
+        if (rc_rc) return 1;
     }
-    { uint32_t t = TIMER_E;
-      rc_rc = devread_orig(d, lba, buf, n, a5);
-      t = TIMER_E - t; if (d == 1) { rc_t_d1 += t; rc_kb_d1 += sz >> 10; } else rc_t_other += t; }
-    if (rc_on && d == 1 && rc_rc == 1 && sz && sz <= 0x10000) {
-        struct rc_ent *e;
-        rc_miss++;
-        if (rc_n < RC_MAX && rc_bytes + sz <= RC_BYTES) e = &rc[rc_n++];
-        else { e = &rc[rc_next]; rc_next = (rc_next + 1) % (rc_n ? rc_n : 1); if (e->data) { os_free(e->data); rc_bytes -= e->count * 512; } e->data = 0; }
-        if ((e->data = os_malloc(sz))) { memcpy(e->data, buf, sz); e->lba = lba; e->count = n; rc_bytes += sz; }
-    }
+    t = TIMER_E;
+    rc_rc = devread_orig(d, lba, buf, n, a5);
+    ra_time(d, t);
+    if (d == 1) rc_kb_d1 += n >> 1;
     return rc_rc;
 }
 __attribute__((used, section(".text.entry"))) int e_devwrite(uint32_t d, uint32_t lba, const void *buf, uint32_t n, uint32_t a5)
 {
-    if (rc_on && d == 1) rc_clear();
-    return devwrite_orig(d, lba, buf, n, a5);
+    int r;
+    if (ra_on) ra_written(d, lba, n);
+    r = devwrite_orig(d, lba, buf, n, a5);
+    if (ra_on) ra_written(d, lba, n);                        /* a block filled during the write */
+    return r;
 }
 
 /* ---- PMU reads, cached for a second ----
@@ -245,8 +439,6 @@ __attribute__((used, section(".text.entry"))) int e_devwrite(uint32_t d, uint32_
  * the first frame). Apple's own time cache (0x080592b4) clears its valid flag after every read.
  * Each now keeps its last answer for 1 s; copies are made with interrupts off. */
 #define PMU_TTL 1000000u
-static inline uint32_t irq_off(void) { uint32_t c, t; __asm__ volatile("mrs %0, cpsr\n orr %1, %0, #0xc0\n msr cpsr_c, %1" : "=r"(c), "=r"(t)); return c; }
-static inline void irq_on(uint32_t c) { __asm__ volatile("msr cpsr_c, %0" :: "r"(c)); }
 uint32_t pmu_hits, pmu_miss;
 
 __attribute__((naked, used)) static int gettime_orig(uint8_t *out)

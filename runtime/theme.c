@@ -460,11 +460,13 @@ static void __attribute__((used)) appinit_c(uint32_t *r)
     { void prof_start(void); prof_start(); }
 #endif
     log_t(0);
-    { void rc_start(void); rc_start(); }   /* boot read cache for the resource volume, until the first frame */
+    { void rc_start(void); rc_start(); }   /* boot read accounting and read-ahead window, until the first frame */
     {   /* the bootloader's stage times (its own clock; the OS restarts the timer) */
         volatile uint32_t *bt = (volatile uint32_t *)0x2203ff40;
         if (bt[0] == 0x4d544c42) {
-            static const char *const nm[] = { "lcd+battery ", "storage init ", "find osfl ", "read ", "checksum ", "sysinfo ", "drive sleep " };
+            /* stamp i+1 minus stamp i: buttons read, battery check, storage init, osfl found, image
+               read, checksum, SysInfo + drive sleep (ipod-s5l87xx.c oschain_stamp) */
+            static const char *const nm[] = { "buttons ", "battery ", "storage init ", "find osfl ", "read ", "checksum ", "sysinfo+sleep " };
             int k;
             log_s("   bootloader (ms): start "); log_d((int)(bt[1] / 1000)); log_s(", ");
             for (k = 0; k < 7; k++) { log_s(nm[k]); log_d((int)((bt[2 + k] - bt[1 + k]) / 1000)); log_s(k < 6 ? ", " : ""); }
@@ -1211,6 +1213,7 @@ __attribute__((used, section(".text.entry"))) void e_font_dir(int kind, int8_t *
     static int have = -1;
     int size;
     if (kind != 1) return;
+    { void ra_start(void); ra_start(); }    /* the font scan and glyph pass read in 128 KB blocks until the first frame */
     if (have < 0) {
         have = file_read("FLAC\\Fonts\\Helvetica.ttf", 0, 0, &size) >= 0 && size > 0;
         log_s("   fonts: "); log_s(have && theme_style ? "FLAC\\Fonts (Modern)" : "Resources/Fonts");

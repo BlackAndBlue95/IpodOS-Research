@@ -3,8 +3,14 @@
 
 static char logb[16384];
 static int logn;
+static char ring[512];                   /* the last bytes logged, also once logb is full (crash tail) */
+static unsigned ringn;
 
-void log_c(char c) { if (logn < (int)sizeof logb - 1) logb[logn++] = c; }
+void log_c(char c)
+{
+    ring[ringn++ % sizeof ring] = c;
+    if (logn < (int)sizeof logb - 1) logb[logn++] = c;
+}
 void log_s(const char *s) { while (*s) log_c(*s++); }
 void log_x(uint32_t v, int digits) { while (digits--) log_c("0123456789abcdef"[(v >> (4 * digits)) & 15]); }
 void log_d(int v)
@@ -16,12 +22,24 @@ void log_d(int v)
     do { t[i++] = '0' + u % 10; u /= 10; } while (u);
     while (i) log_c(t[--i]);
 }
-int log_tail(char *dst, int n)   /* the last n - 1 bytes, 0-terminated */
+int log_mark(void) { return logn; }
+int log_take(int mark, char *dst, int max)   /* text logged since mark moved into dst; the log cut back */
 {
-    int i, from = logn > n - 1 ? logn - (n - 1) : 0;
-    for (i = 0; from + i < logn; i++) dst[i] = logb[from + i];
-    dst[i] = 0;
-    return i;
+    int i, n = logn - mark;
+    if (mark < 0 || n < 0) return 0;
+    if (n > max) n = max;
+    for (i = 0; i < n; i++) dst[i] = logb[mark + i];
+    logn = mark;
+    return n;
+}
+int log_tail(char *dst, int n)   /* the last n - 1 bytes logged (at most 512), 0-terminated */
+{
+    unsigned i, k = ringn < sizeof ring ? ringn : sizeof ring;
+    if (n < 1) return 0;
+    if (k > (unsigned)n - 1) k = n - 1;
+    for (i = 0; i < k; i++) dst[i] = ring[(ringn - k + i) % sizeof ring];
+    dst[k] = 0;
+    return (int)k;
 }
 void log_name(const char *s)    /* printable bytes as is, others as <xx> */
 {
@@ -47,19 +65,23 @@ void flac_dump(void)
 }
 
 /* boot timeline: TIMER_E (1 MHz, running since the bootloader) at fixed points */
-static uint32_t tl[12];
+static uint32_t tl[12], tl_drv[12];
 static const char *const tl_name[12] = { "appinit", "libload", "mount", "sync", "oslib", "art", "done", "ui", "render", 0, 0, 0 };
-void log_t(int slot) { if (slot >= 0 && slot < 12) tl[slot] = TIMER_E; }
+uint32_t rc_drive_ms(void);
+void log_t(int slot) { if (slot >= 0 && slot < 12) { tl[slot] = TIMER_E; tl_drv[slot] = rc_drive_ms(); } }
+/* each phase's length, with the device read time inside it in brackets */
 void log_timeline(void)
 {
-    int i;
+    int i, p;
     log_s("   timeline (ms): ");
     for (i = 0; i < 12 && tl_name[i]; i++) {
         if (!tl[i]) continue;
         if (i) log_s(", ");
         log_s(tl_name[i]); log_c(' ');
-        if (i == 0) log_d((int)(tl[0] / 1000));
-        else { log_c('+'); log_d((int)((tl[i] - tl[i - 1 - (i > 1 && !tl[i - 1])]) / 1000)); }
+        if (i == 0) { log_d((int)(tl[0] / 1000)); continue; }
+        p = i - 1 - (i > 1 && !tl[i - 1]);
+        log_c('+'); log_d((int)((tl[i] - tl[p]) / 1000));
+        if (tl_drv[i] > tl_drv[p]) { log_s(" ["); log_d((int)(tl_drv[i] - tl_drv[p])); log_c(']'); }
     }
     log_c('\n');
 }
@@ -96,5 +118,6 @@ void crumb(const char *name)
     if (crumb_st != 1) return;
     for (i = 0; i < crumb_n; i++) if (crumb_seen[i] == name) return;
     if (crumb_n < 64) crumb_seen[crumb_n++] = name;
-    log_s("   step: "); log_s(name); log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
+    { uint32_t rc_drive_ms(void);
+      log_s("   step: "); log_s(name); log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms, drive reads "); log_d((int)rc_drive_ms()); log_s(" ms\n"); }
 }

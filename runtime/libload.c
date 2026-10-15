@@ -33,6 +33,7 @@ void libload_first_frame(void)
     seen = 1;
     crumb_state(2);                       /* DIAG */
     log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
+    { extern uint32_t font_skipped; if (font_skipped) { log_s("   ui: "); log_d((int)font_skipped); log_s(" text elements skipped, font not available\n"); } }
     { void rc_stop(void); rc_stop(); }
     { void rtxcbug_script(void); rtxcbug_script(); }   /* FLAC\rtxcbug.txt, if any */
 #ifdef RTXCBUG_TEST
@@ -42,9 +43,22 @@ void libload_first_frame(void)
     { void prof_mark(const char *); void prof_stop(int); prof_mark("first frame"); prof_stop(1); }
 #endif
     log_flush();
-#ifdef CRASH_TEST
+    { extern uint32_t pb_lazy; void fatdir_release(void); if (!pb_lazy) fatdir_release(); }   /* lazy: at pre-build done */
+#if CRASH_TEST == 2                              /* emulator only: exercises crash.c */
+    log_s("   crash test: an Apple error trail entry, then an assert\n");
+    ((void (*)(int, int, int, int, int))0x0803ebac)(13, 0x71, 105, 0x1111, 0x2222);
+    ((void (*)(const char *, int, const char *))0x0804327c)("assertion failed on line %d of file %s", 123, "crash_test.c");
+#elif CRASH_TEST == 3
+    log_s("   crash test: audio engine event 4 (play/pause) with no song played\n");
+    {
+        void *eng = ((void *(*)(void))0x0802d0b0)();
+        ((void (*)(void *, int, int))0x0802d0b8)(eng, 0, 4);
+        log_s("   crash test: engine event returned\n");
+        log_flush();
+    }
+#elif defined CRASH_TEST
     log_s("   crash test: undefined instruction\n");
-    __asm__ volatile(".word 0xe7f000f0");       /* emulator only: exercises crash.c */
+    __asm__ volatile(".word 0xe7f000f0");
 #endif
 }
 
@@ -63,6 +77,8 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     log_s(e_debug ? ", debug\n" : "\n");
     if (!task) { void crash_report(void); crash_report(); }
+    if (!task) { void audio_listener_guard(void); audio_listener_guard(); }   /* crash.c */
+    if (!task) { void rtxcbug_tick_load(void); rtxcbug_tick_load(); }   /* semihost.c */
     path_new_library();
     art_new_library();
     if (!task) {
@@ -127,7 +143,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 #endif
     { void fat_state_log(const char *); fat_state_log("before the log write"); }
 #endif
-    if (task) { void fatdir_release(void); fatdir_release(); }   /* at boot, the UI init hook closes it */
+    if (task) { void fatdir_release(void); fatdir_release(); }   /* at boot: pre-build done or the first frame */
     if (task) { void rtxcbug_script(void); rtxcbug_script(); }   /* after a USB session: FLAC\rtxcbug.txt, if any */
     log_flush();
 }

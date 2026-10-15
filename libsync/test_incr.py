@@ -434,12 +434,20 @@ check(os.path.exists(state), 'and the state file is written again')
 
 def box(typ, body): return struct.pack('>I', 8 + len(body)) + typ + body
 
-def mp4(path, secs, rate=44100):
-    """the boxes read_mp4 reads: mvhd (600 ticks a second) and a sound track's mp4a entry"""
+def mp4(path, secs, rate=44100, video=None):
+    """the boxes read_mp4 reads: mvhd (600 ticks a second), a sound track's mp4a entry and, with
+    video = (codec, width, height, profile, level), a video track's entry with its avcC"""
     mvhd = box(b'mvhd', bytes(12) + struct.pack('>II', 600, 600 * secs) + bytes(80))
     mp4a = struct.pack('>I', 36) + b'mp4a' + bytes(6) + struct.pack('>H', 1) + bytes(8) + struct.pack('>HHHHI', 2, 16, 0, 0, rate << 16)
     stbl = box(b'stbl', box(b'stsd', struct.pack('>II', 0, 1) + mp4a))
-    moov = box(b'moov', mvhd + box(b'trak', box(b'mdia', box(b'minf', stbl))))
+    traks = box(b'trak', box(b'mdia', box(b'minf', stbl)))
+    if video:
+        codec, w, h, prof, lvl = video
+        avcc = box(b'avcC', bytes([1, prof, 0, lvl]) + bytes(4))
+        ent = codec + bytes(6) + struct.pack('>H', 1) + bytes(16) + struct.pack('>HH', w, h) + bytes(50) + avcc
+        vstbl = box(b'stbl', box(b'stsd', struct.pack('>II', 0, 1) + struct.pack('>I', 4 + len(ent)) + ent))
+        traks = box(b'trak', box(b'mdia', box(b'minf', vstbl))) + traks
+    moov = box(b'moov', mvhd + traks)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, 'wb').write(box(b'ftyp', b'M4V \0\0\0\1') + moov + box(b'mdat', bytes(4096)))
 
@@ -449,7 +457,7 @@ def videos(db): return {t.s(2): t for t in db.tracks if t.u(24) == M4V}
 print('20. TV episodes under /TV Shows')
 tv = os.path.join(root, 'TV Shows')
 EPS = {'Show A/Season 2/S02E03 - Pilot.m4v': (90, 2, 3, 'Pilot', 'Show A'),
-       'Show A/Season 2/S02E04.m4v': (95, 2, 4, 'Episode 4', 'Show A'),
+       'Show A/Season 2/S02E04.M4V': (95, 2, 4, 'Episode 4', 'Show A'),   # an 8.3 name as FAT lists it
        'Show B/Intro.mp4': (60, 1, 1, 'Intro', 'Show B'),
        'Show B/Second.mp4': (61, 1, 2, 'Second', 'Show B')}
 for rel, (secs, *_) in EPS.items(): mp4(os.path.join(tv, rel), secs)
@@ -459,7 +467,7 @@ check(r['wrote'] == '1' and r['videos'] == '4' and r['added'] == '4' and r['remo
 v20 = videos(db20)
 ok = len(v20) == 4
 for rel, (secs, season, ep, title, show) in EPS.items():
-    t = v20.get(':TV Shows:' + rel.replace('/', ':'))
+    t = v20.get(':TV Shows:' + (rel[:-4] + rel[-4:].lower()).replace('/', ':'))   # extension in lower case
     ok &= bool(t) and t.u(40) == secs * 1000 and t.u(0xd4) == season and t.u(0xd8) == ep and t.u(0xd0) == 0x40 \
         and t.hdr[0xa6] == 0 and t.hdr[0xaa] == 0 and t.hdr[0xb1] == 1 and t.s(1) == title and t.s(4) == show \
         and t.s(3) == '%s, Season %d' % (show, season) and t.s(19) == show and t.s(20) == 'S%02dE%02d' % (season, ep) \
@@ -504,6 +512,17 @@ r = run('--now', str(NOW + 2700))
 raw22b, db22b = load(dbp); validate(raw22b, db22b); verify(dbp)
 check(r['wrote'] == '1' and r['removed'] == '3' and r['videos'] == '0' and not videos(db22b), 'no /TV Shows: the episodes dropped')
 check(nflac(db22b) == int(r['flacs']) and r['kept'] == r['flacs'], 'and every FLAC entry kept')
+
+print('23. episodes the iPod cannot play are not added')
+mp4(os.path.join(tv, 'Show C/S01E01.m4v'), 30, video=(b'avc1', 640, 480, 66, 30))
+mp4(os.path.join(tv, 'Show C/S01E02.m4v'), 30, video=(b'avc1', 640, 480, 100, 30))    # High profile
+mp4(os.path.join(tv, 'Show C/S01E03.m4v'), 30, video=(b'avc1', 1280, 720, 66, 31))    # too large
+mp4(os.path.join(tv, 'Show C/S01E04.m4v'), 30, video=(b'hvc1', 640, 480, 0, 0))       # HEVC
+r = run('--now', str(NOW + 2800))
+raw23, db23 = load(dbp); validate(raw23, db23); verify(dbp)
+v23 = videos(db23)
+check(r['added'] == '1' and r['skipped'] == '3' and list(v23) == [':TV Shows:Show C:S01E01.m4v'],
+      'Baseline 640x480 added; High profile, 1280x720 and HEVC skipped')
 
 print('\n%s' % ('ALL PASSED' if not fails else '%d FAILED' % fails))
 sys.exit(1 if fails else 0)

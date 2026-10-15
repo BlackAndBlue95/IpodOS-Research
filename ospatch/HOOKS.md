@@ -20,6 +20,7 @@ grow down); 0x0809d944/0x0809d948 (bounds of a record list inside the data regio
 |---|---|---|---|
 | 0x08087260 | 0x0a000005 beq 0x0808727c | beq 0x08087214 | ".flac" classifies as type 3 (WAV reader) |
 | 0x08087264 | 0xe3a02004 | 0xe3a02003 | "aifc" compare 3 chars, .aiff/.aifc stay AIFF |
+| 0x080870f0 | 0xe3510003 cmp r1, #3 | cmp r1, #5 | media classifier (0x080870ac) copies the last 5 characters but lower-cased only 3: an upper-case extension (S01E01.M4V -> "m4V") classified as unknown and the player silently opened nothing |
 | 0x080872f0 | "aiff" | "flac" | 4-char extension string |
 | 0x0804d434 | 0x0a000004 | 0x0a000000 | missing ArtworkDB (-43) keeps an empty artwork library |
 | 0x0804d3d0 | 0x1a00001d | nop | stat Artwork dir failed: carry on |
@@ -41,6 +42,10 @@ Not applied in v18: v17's PCM reader kill at 0x081ff0ac and the stub over 0x0827
 | 0x0804d7c4 (boot) | bl 0x0805d62c library load | `e_libload_boot` |
 | 0x081ae29c (TMusicLoadingTask::Run, disk-mode reload) | bl 0x0805d62c library load | `e_libload_task` |
 | 0x0802dd08, 0x0802dd34, 0x0802dd4c, 0x0802dd64, 0x0802dd7c (vector stubs: undef, prefetch abort, data abort, reserved, FIQ) | bl 0x0803930c CPU_exception_handler (semihost print, then reset via SWRCON 0x3c500050) | `e_cpu_exc` (crash record, then Apple's reset 0x0835d028) |
+| 0x082a71d0 (end of exit/abort/raise) | b 0x0803930c (sp, kind 8) | `e_cpu_exc` |
+| 0x08026054 exit, 0x0802606c abort (entries) | e92d4010 (e1a04000), e3a01000 (e92d4010) | `b hk_exit`: crash record before the stdio teardown (which can block) |
+| 0x0804328c (in the assert 0x0804327c) | bl 0x0802477c vfprintf(stderr, fmt, {line, file}) | `e_assert_print`: file and line kept for the record |
+| 0x0803ebac (entry: Apple's error trail) | e92d47f0 (e59d9020) | `b hk_errtrail`: mirrored into crash.c's ring |
 | 0x0802dd1c (SWI vector stub, regs = caller's r0-r12, lr) | bl 0x0804b398 (`mov r0,#0; bx lr`, asserted) | `e_swi` (semihosting: RTXCbug console, Apple's debug prints) |
 
 ## Function entries: `b E_hook` over the first instruction (E runs it and returns to entry+4)
@@ -50,6 +55,7 @@ Not applied in v18: v17's PCM reader kill at 0x081ff0ac and the stub over 0x0827
 | 0x0826d8e0 stream seek | 0xe92d43f8 (0xe1a04000) | `hk_seek` | blob runtime hook |
 | 0x0826d5fc stream read | 0xe92d47f0 (0xe24dd020) | `hk_read` | blob runtime hook |
 | 0x0828a5ac WAV parser | 0xe92d43f0 (0xe1a04000) | `hk_parse` | blob runtime hook |
+| 0x0806aa08 volume unmount | 0xe92d403e (0xe1a01000) | `hk_unmount` | new: fatdir's raw device handle closed first, or at the end of a running session |
 
 ## Data
 | Addr | Stock | v18 | Purpose |

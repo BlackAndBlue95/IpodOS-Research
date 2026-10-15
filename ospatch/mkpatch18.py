@@ -42,7 +42,7 @@ for l in open(a.syms):
     p = l.split()
     if len(p) == 3: sym[p[2]] = int(p[0], 16)
 E_END = E_BASE + len(e)
-CRASH_ROOM = 0x1000                              # top of the reserve: crash.c's record (last 0x800) and slack for sector-rounded loads
+CRASH_ROOM = 0x1000                              # top of the reserve: crash.c's record (last 0xc00) and slack for sector-rounded loads
 if a.prof: E_RESERVE = 0xc0000                   # profiler builds: trampolines and counters need more room
 if len(e) + CRASH_ROOM > E_RESERVE: E_RESERVE = (len(e) + CRASH_ROOM + 0x3ffff) & ~0x3ffff   # Modern icons (sficons_data.h, both versions in the image): the heap starts later
 assert len(e) + CRASH_ROOM <= E_RESERVE, 'region E is %d bytes, more than the %d reserved' % (len(e), E_RESERVE)
@@ -93,6 +93,11 @@ retarget(0x081ae29c, LIBLOAD, sym['e_libload_task'])
 # vector stubs (undef, prefetch abort, data abort, reserved, FIQ) -> e_cpu_exc: crash record, then Apple's reset
 CPU_EXC = 0x0803930c
 for at in (0x0802dd08, 0x0802dd34, 0x0802dd4c, 0x0802dd64, 0x0802dd7c): retarget(at, CPU_EXC, sym['e_cpu_exc'])
+retarget(0x082a71d0, CPU_EXC, sym['e_cpu_exc'])                # exit/abort (asserts, C++ terminate): kind 8
+entry_hook(0x08026054, 0xe92d4010, 0xe1a04000, sym['hk_exit'])   # exit, before its stdio teardown (can block)
+entry_hook(0x0802606c, 0xe3a01000, 0xe92d4010, sym['hk_exit'])   # abort, likewise
+retarget(0x0804328c, 0x0802477c, sym['e_assert_print'])        # the assert's message print: file and line kept
+entry_hook(0x0803ebac, 0xe92d47f0, 0xe59d9020, sym['hk_errtrail'])   # Apple's error trail, mirrored for crash records
 # SWI vector stub -> e_swi: semihosting (RTXCbug's console, Apple's debug prints); stock calls a stub returning 0
 assert rd(0x0804b398) == 0xe3a00000 and rd(0x0804b39c) == 0xe12fff1e
 retarget(0x0802dd1c, 0x0804b398, sym['e_swi'])
@@ -103,6 +108,7 @@ if a.hooks == 'all':
     # FLAC classifier and ArtworkDB tolerance
     wr(0x08087260, (0x0 << 28) | 0x0a000000 | (((0x08087214 - 0x08087260 - 8) >> 2) & 0xffffff), 0x0a000005)   # '.flac' match -> WAV type 3
     wr(0x08087264, 0xe3a02003, 0xe3a02004)                     # aif/aifc compare: 3 characters
+    wr(0x080870f0, 0xe3510005, 0xe3510003)                     # classifier lower-cases all 5 copied characters (stock 3: ".M4V" reads as "m4V", unknown)
     o = off(0x080872f0); assert img[o:o + 5] == b'aiff\0'; img[o:o + 4] = b'flac'   # 'aiff' type string -> 'flac'
     wr(0x0804d434, 0x0a000000, 0x0a000004)                     # no ArtworkDB (-43): keep the artwork library empty, not discarded
     wr(0x0804d3d0, 0xe1a00000, 0x1a00001d)                     # missing Artwork folder: carry on
@@ -117,6 +123,7 @@ if a.hooks == 'all':
     for at in (0x08163a6c, 0x08137dc0): retarget(at, 0x082c5f14, sym['e_art_clear'])   # white clear: album view, main menu art pane
     retarget(0x08270adc, 0x083c89b0, sym['e_refl_verts'])     # cover reflection corners -> e_refl_verts: collapsed in Modern style
     retarget(0x08193444, 0x08106aec, sym['e_batt_index'])     # status bar battery icon's level index -> e_batt_index: percentage
+    wr(0x0817ab78, 0xea000000 | (((sym['e_font_inst'] - 0x0817ab78 - 8) >> 2) & 0xffffff), 0xe59d0000)   # text element: a NULL font instance skips it (uifast.c)
     retarget(0x08298f80, 0x0804a840, sym['e_song_artist'])    # per-song artist text (Now Playing, song rows) -> e_song_artist: the song's own artist
     retarget(0x081df3ec, 0x08267210, sym['e_opbar_ink'])      # Now Playing option bar label colours -> e_opbar_ink (Modern: light)
     retarget(0x081df414, 0x08267210, sym['e_opbar_ink'])
@@ -197,6 +204,7 @@ if a.hooks == 'all':
     entry_hook(0x0827ee0c, 0xe92d4070, 0xe3a03000, sym['hk_appinit'])   # Music app init: theme before anything of the app exists
     entry_hook(0x08143c04, 0xe92d41f0, 0xe24dde42, sym['hk_lcdinit'])   # LCD init: captures the LCD driver
     entry_hook(0x08113470, 0xe92d4070, 0xe24dd038, sym['hk_render'])   # UI render pass: deferred theme walk
+    entry_hook(0x0806aa08, 0xe92d403e, 0xe1a01000, sym['hk_unmount'])   # volume unmount: our raw device handle closed first (fatdir.c)
     entry_hook(0x081a8444, 0xe92d4ff7, 0xe24dd038, sym['hk_marq'])     # marquee draw
     entry_hook(0x082d75c8, 0xe92d40f8, 0xe3a05000, sym['hk_fatfree'])  # FAT free count: seeded from FSInfo instead of a full FAT scan
     entry_hook(0x082d61c0, 0xe92d40f8, 0xe1a06000, sym['hk_fatsearch'])  # free-cluster search: raw FAT reads for long ranges
@@ -222,6 +230,7 @@ if a.hooks == 'all':
         wr(0x081ae9d0, 0xeb000000 | (((sym['e_pb_entry'] - 0x081ae9d0 - 8) >> 2) & 0xffffff), 0x03a05000)   # state 0 stays blocking, the flag is kept
         wr(0x081aea54, 0xea000000 | (((sym['e_pb_state0_done'] - 0x081aea54 - 8) >> 2) & 0xffffff), 0xea000032)   # background mode returns after state 0
         wr(0x081aeb1c, 0xea000000 | (((sym['e_pb_done'] - 0x081aeb1c - 8) >> 2) & 0xffffff), 0xe3a00003)   # pre-build done: one home reload in background mode
+        wr(0x080e285c, 0xea000000 | (((sym['e_glyph_call'] - 0x080e285c - 8) >> 2) & 0xffffff), 0xeaff1aa5)   # glyph member call: skipped when the font object is not set up (uifast.c)
     if a.games_defer:   # Games manager init: skip the catalog warm-up (Manifest.plist parse); it loads on first use
         wr(0x080f62d8, 0xe1a00000, 0xebfffc29)
     if 'hk_tpost' in sym:   # profiler builds: log the boot's software timers

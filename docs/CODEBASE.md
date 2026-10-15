@@ -57,7 +57,37 @@ sync → `os_libload` → health line → art database → headset plug events �
   loaded without an album beyond those whose files have no ALBUM tag. Non-zero, or a track count
   different from the files, ends the line with `<-- CHECK`.
 - **Timeline.** `timeline (ms): appinit A, libload +B, ...` from TIMER_E (`0x3c7000b4`, 1 MHz). The
-  OS restarts the timer, so it excludes the bootloader.
+  OS restarts the timer, so it excludes the bootloader. `[N]` after a phase is the device read time
+  inside it; the `step:` lines between UI init and the first frame carry the running total.
+- **Boot glyph pass (`runtime/uifast.c`, `BOOT_GLYPHS`).** Apple's text engine is FreeType
+  (`0x080c948c` rasterises). The glyph pass `0x081ae8c4` renders, for each font instance in the list
+  `[0x089cc8dc]`, every pending character of its renderer (`instance+0x98`, bitset `+0x8c`): ~1670
+  SF glyphs before the first frame, ~1.1 s on the device; no CJK glyph is drawn (those fonts are only
+  searched for characters SF lacks). At boot only instances 1 and 4 (creation order with the English
+  UI: the main menu's rows and preview label) are rendered, ~690 glyphs; the rest keep their pending
+  characters for the background build's pass, which does one instance per tick. Without any boot pass
+  the menu rows have no text. After a crash of the same build (`crash_prev`, crash.c) the next boot
+  runs Apple's full pass.
+- **Raw device handle and drive power.** Closing fatdir's block device lets storage power the drive
+  down; the next write powers it up on the writing task: battery check (`0x08278aa0` → `0x082b1e54`),
+  ATA reset pulse and drive supply (PMU register 0x52) with 10 + 10 + 50 ms sleeps (`0x082b1dec` →
+  `0x08361388`/`0x08361124`), battery again, ~0.6 s on the device. So the handle stays open from the
+  library load until the boot release (pre-build done with `--ui-lazy`, else the first frame); after
+  that each session (`fatdir_begin`/`fatdir_end`, also osfile.c's free-space searches) closes it at its
+  end. Volume unmount `0x0806aa08` (`hk_unmount`) closes it first, or at the end of a running session.
+  The updater uses `fatdir_close`.
+- **Boot reads (`runtime/uifast.c`).** The device read `0x082bb36c` (drive, lba, buf, count) is
+  hooked from app init to the first frame (read time for the log). From the font scan (`e_font_dir`)
+  on, reads on drives 0 and 1 are served from 128 KB blocks read once: the boot glyph pass reads the
+  CJK fallback fonts (CJK11/CJK16) in ~440 scattered 8 KB pieces, with stock or `FLAC\Fonts` fonts
+  alike; 38 block reads cover them. `0x082bb36c` counts 512-byte sectors on every drive, whatever the
+  volume's sector size: drive → object `0x08ad1794[d]` (partition start `+0x0c`) → device (`+4`, vt
+  `0x089a7378`) → `0x0828c08c`, which shifts by 9 and splits into the drive's blocks (`+0x1c` bytes,
+  `+0x20` sectors each, bounce block `+0x50`). Only blocks inside a volume's data area
+  are cached: some writes (FSInfo `0x080595b4`) go to the drive object directly, past `0x082bb418`.
+  A fill that overlaps any write is dropped, a failed fill is remembered, the first 8 fills are
+  compared with a direct read (a mismatch turns read-ahead off), and the blocks are freed at the
+  first frame once no reader is inside.
 
 Measured on a 746-track library: OS start → library load 1.8 s, our sync 0.33 s (unchanged
 library), Apple's loader 5.2 to 5.8 s (pure CPU at L0, no per-track file access), art update 9 ms.
@@ -181,23 +211,22 @@ Trace words `TR(n)` (see the legends in `art.c` and `flacblob.c`) are debug coun
 `FLAC\flaclogXY.bin` only when `FLAC\debug.txt` exists. Known: the `art.c` legend is stale for
 TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read ticks).
 
-### Video and the panel frame marker (`runtime/panel.c`)
+### Video
 Apple's video path needs no patch: the S5L8702's own decoder (`0x39800000`) decodes H.264 into a
 5 MB frame pool, and the display task `0x081ce0ac` presents one frame (`0x080eaad8`) each time the
-LCD's frame marker (FMARK, GPIO 55, EIC group 5 bit 15) signals its semaphore; the LCD driver
-registers that handler in `0x081447fc` (driver, semaphore) → `0x080404d0(55, ...)`. Without pulses
-the player fills its pool and sits on a black screen at 0:00; menus don't need the line.
+LCD's frame marker (FMARK, GPIO 55) signals; the marker pulses with our bootloader's panel setup.
 
-Apple's bootloader turns the line on. Ours uses Rockbox's panel setup, which on panel types 2/3
-(ILI9326, PDAT6 bits 4-5; this iPod is type 2) writes R090h = `0x0021`: FMKM (bit 15, output
-enable) off. Turning it on did not fix video (R66 wrote R090h = `0x8021`, still black), so the
-hook is no longer installed and `panel.c` is not built; it is kept for the next video attempt. It was
-an entry hook on `0x081447fc` (`hk_fmark_reg`) writing R090h = `0x8021` whenever a semaphore is registered (first screen, each video start, after a resume): wait for the controller
-(`0x38300000`) to idle, command mode `0x80000da8`, index `0x090`, data, index `0x202` again (GRAM
-write, so a preempted driver still lands pixels), previous mode back. Interrupts are off for those
-microseconds; every wait gives up after 2 ms and leaves the register as it was (logged once).
-Types 0/1 get "tearing effect line on" from Rockbox's setup already. The emulator models the
-line (`tools/qemu/README.md`, `EIC_FMARK=panel`).
+An episode named like `S01E01.m4v` fits 8.3, so FAT keeps only its short name and the listing
+(Apple's and `fatdir.c`) gives `S01E01.M4V`. Apple's media classifier (`0x080870ac`: mp3 aif afc
+m4a m4b m4p m4v mp4 mov aax wav pcm aiff aifc aa, plus our flac) copies the last 5 characters but
+lower-cases only 3 (`cmp r1, #3` at `0x080870f0`), so `.M4V` reads as `m4V`, an unknown type: the
+player shows a black screen at 0:00, opens no file and submits no access unit. The patch makes the
+loop cover all 5 characters (any extension case, any track), and libsync lower-cases `/TV Shows`
+extensions when it scans them. libsync also leaves out, with a
+`sync: <file>: <reason>  <-- CHECK` line, episodes the player cannot decode (not H.264 avc1 or
+MPEG-4 mp4v, larger than 640x480, H.264 other than Baseline) and FLACs the decoder rejects
+(outside 8-192 kHz, 4-24 bits, blocks under 16); H.264 above level 3.0 or non-AAC sound is
+added with a warning. `tools/qemu/videotest.py` checks playback end to end in the emulator.
 
 ## 7. Paths (`runtime/path.c`, `runtime/osfile.c`)
 
@@ -324,7 +353,8 @@ PYTHONPATH=runtime/host python3 runtime/host/gen_settings.py ospatch/Firmware-35
     runtime/settings_data.h runtime/settings_data.json
 runtime/build.sh
 python3 ospatch/mkpatch18.py --base stock --image ospatch/Firmware-35.9.0.4.osos.dec \
-    --e runtime/e.bin --syms runtime/e.syms --out ospatch/osos-v18.dec --hooks all --governor-floor
+    --e runtime/e.bin --syms runtime/e.syms --out ospatch/osos-v18.dec --hooks all --governor-floor \
+    --ui-fast --ui-lazy --games-defer
 python3 ospatch/checkpatch.py ospatch/osos-v18.dec runtime/e.bin runtime/e.syms all
 ```
 
@@ -341,14 +371,31 @@ The device log is `FLAC\rtlog.txt` (previous run in `rtlog.prev.txt`).
 
 CPU exceptions (`runtime/crash.c`): the IRAM vectors (undef 0x04, prefetch 0x0c, data abort 0x10,
 reserved 0x14, FIQ 0x1c) reach stubs at `0x0802dcfc..` that call `0x0803930c(regs, kind)`, Apple's
-CPU_exception_handler; it resets at once (`0x0835d028`: watchdog off, SWRCON = 0xaa5). `e_cpu_exc`
-first writes a record 0x800 below the heap base (registers, SPSR, banked sp/lr, DFSR/IFSR/FAR, 1 KB
-of stack, the last 512 bytes of the log), cleans it from the D-cache, then jumps to the reset
-`0x0835d028` (skipping the handler's svc, which would fault again on a broken SVC stack).
-Bootloader BSS (0x08800000..0x088aa440) and the staged image (0x0a000000..) miss it. The next boot
-logs `CRASH in the previous run` with return-address candidates. Emulator test: `EDEFS=-DCRASH_TEST`
-(undefined instruction after the first frame). DRAM keeping its contents across the reset is
-verified only in QEMU.
+CPU_exception_handler; it resets at once (`0x0835d028`: watchdog off, SWRCON = 0xaa5). The C
+library's exit `0x08026054` and abort `0x0802606c` end there too (`0x082a71c8`, kind 8), but only
+after a stdio teardown that can block the task for good: an assert (`0x0804327c`, 28 callers:
+message to stderr, then exit(1)) froze the task in QEMU instead of resetting. `e_cpu_exc` (also
+entered from both entries, `hk_exit`) first writes a record 0xc00 below the heap base (registers,
+SPSR, banked sp/lr, DFSR/IFSR/FAR, 1 KB of stack, the last 512 bytes logged, the assert's file and
+line from `e_assert_print`, the last 32 entries of Apple's error trail, the build's region E end),
+cleans it from the D-cache, then jumps to the reset `0x0835d028` (skipping the handler's svc, which
+would fault again on a broken SVC stack). Apple's error trail: `0x0803ebac(module, code, line, a3,
+a4)` (197 callers, every error path) packs `module<<24 | code<<12 | line` into a 16-entry ring per
+task; `hk_errtrail` mirrors each call into a global ring. Bootloader BSS (0x08800000..0x088aa440)
+and the staged image (0x0a000000..) miss the record. The next boot appends the report to
+`FLAC\crash.txt` and logs a `CRASH in the previous run` line. Emulator tests: `EDEFS=-DCRASH_TEST`
+(undefined instruction after the first frame), `-DCRASH_TEST=2` (an error trail entry, then an
+assert), `-DCRASH_TEST=3` (audio engine event 4 with no song played; add `-DNO_LISTENER_GUARD`
+to see the crash). DRAM keeps its contents across the reset on the device.
+
+Audio engine listener (`audio_listener_guard`, crash.c): Apple's IRAM audio engine (task loop
+`0x220047b0`, event handler `0x22004eec`, also `0x22005298`) reports pause/stop/end of stream to a
+listener at `0x22008c98` (vt[0xc4], vt[0xbc]), set only by the music player's start
+(`0x081f6798` → `0x220056d0`, the listener is that player object). The video player
+(`MeCCA_VideoBufferMgr`, stop `0x081b09b4` → `0x220054a8`, EndOfStream `0x080ab90c`) drives the same
+engine without setting it, so pausing or stopping a video before any song since boot called through 0
+(device: pc `0x22004f88`, far `0xea0000c6`). At boot an empty slot gets an object whose methods all
+return 0; the music player's start replaces it as before.
 
 RTXCbug (`runtime/semihost.c`): Apple left the Quadros RTXC v3.2b kernel debugger in the OS. Its
 task (0x0835d424, priority 0) waits on semaphore 56, which nothing in the OS signals; on wake it
@@ -360,7 +407,8 @@ marked) and answers reads from a script. Usage: put
 RTXCbug input lines in `FLAC\rtxcbug.txt`; at the first frame (and after a USB session) it is
 deleted, run through `KS_signal(56)`, and the transcript lands in `FLAC\semihost.txt` (a line
 "rtxcbug: ..." in rtlog). Without a script, Apple's prints since the last write (if any) go to
-`FLAC\semihost-os.txt`, so a transcript is never overwritten by them. After the script, `x` is fed, so a session always ends. From E code:
+`FLAC\semihost-os.txt`, so a transcript is never overwritten by them. Those prints include C stdio
+(SYS_WRITE from `_sys_write` 0x080270e4: printf, fprintf, assert messages), captured at all times. After the script, `x` is fed, so a session always ends. From E code:
 `rtxcbug_run(script, n)` (the task, everything else blocked) or `rtxcbug_cmds(script, n)` (the
 object menu called in place with IRQs off, nothing blocked; `! $ g x` refused, `u` ends it).
 Main menu: `K` objects, `G`/`X` leave. Object menu (`H` lists it): `T` tasks (number, name,

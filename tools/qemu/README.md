@@ -38,3 +38,23 @@ payload (the bytes after the `avcC` box type).
 
 `IRAMSPILL` covers an audio ring overrun at 0x0802e6b0 that only the emulator hits. Navigate to an episode
 with `tour.sh`'s key sequence once the run log shows "pre-build done".
+
+Deterministic screen checks (tourcmp drifts once navigation timing differs between builds):
+
+    tools/qemu/screens.py ospatch/builds/<image>.dec build/qemu/run/<disk>.img out/home wait1 shot ret wait1 shot
+    tools/qemu/pngdiff.py out/a-01.png out/b-01.png        # differing pixels below the status bar
+
+`screens.py` waits for the first frame, plays the keys (`waitN` sleeps, `shot` saves a numbered PNG)
+and prints the run's first-frame, glyph-pass, pre-build and CRASH lines. Test disks: `EF.img` (stock
+fonts), `EF-fonts.img` (with `FLAC\Fonts`), `EF-classic.img` (`style=classic`).
+
+Playback test (run it before staging anything that touches video, the sync or the classifier):
+
+    tools/qemu/videotest.py ospatch/builds/<image>.dec [disk.img] [show row]
+
+Boots the image in the joel tree on a clone of the disk (default `Z-rb.img`, one Courage episode),
+opens Videos > TV Shows > the show at that row > its first episode and counts H.264 access units at
+the front-end 0x081b6564 through the gdb stub: PASS at 3 within 40 s. `videotest-shows.png` shows
+which show was played. It leaves `EIC_FMARK` unset (marker pulses from boot, as on the device):
+with `EIC_FMARK=panel` the frame pool fills after a few units and stops, since nothing writes R090h.
+The plain `build/qemu/src` tree never starts video (selecting an episode does nothing).

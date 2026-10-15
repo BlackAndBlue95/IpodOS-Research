@@ -286,6 +286,7 @@ static int nkev;
 void __attribute__((used)) krec(uint32_t kind, uint32_t lr, uint32_t a0, uint32_t a1)
 {
     uint32_t cpsr, irq, tmp, t = TIMER_E;
+    if (kind == 3) return;                /* event posts flood the table; the timed waits matter */
     if (!on || !krec_on || t < kwin || nkev >= (int)(sizeof kev / sizeof kev[0])) return;
     __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr));
     if ((cpsr & 0x1f) == 0x12 || (cpsr & 0x1f) == 0x11) return;
@@ -322,7 +323,15 @@ static void wdump(void)
 }
 void kdump(void)
 {
+    int i;
     wdump();
+    log_s("   kernel events (kind 1 sleep, 2 event wait, 6 semaphore wait: a1 = ms blocked):\n");
+    for (i = 0; i < nkev; i++) {
+        log_s("     "); log_d((int)(kev[i].t / 1000)); log_s(" ms task "); log_d((int)kev[i].tn); log_s(" kind "); log_d((int)kev[i].kind);
+        log_s(" lr "); log_x(kev[i].lr, 8); log_s(" a0 "); log_x(kev[i].a0, 8); log_s(" a1 "); log_d((int)kev[i].a1);
+        if (kev[i].n > 1) { log_s(" x"); log_d((int)kev[i].n); }
+        log_c('\n');
+    }
 }
 /* sleep and event wait, timed around the real call: blocks of 20 ms or more after the library load */
 void __attribute__((used)) krec2(uint32_t kind, uint32_t lr, uint32_t t0, uint32_t a)

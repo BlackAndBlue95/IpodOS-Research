@@ -203,20 +203,43 @@ uint32_t fatdir_free_clusters(uint32_t *nclus)
     return n;
 }
 
+static int boot_open = 1;      /* until the boot's release the device stays open between sessions */
+static int release_due;        /* an unmount came during a session: close the device at its end */
+static void dev_release(void)
+{
+#ifndef FATDIR_HOST
+    if (dev) { dev_close(dev); fd_free(dev); dev = 0; }
+#endif
+}
 void fatdir_end(void)
 {
     int i;
     drop_caches();
     for (i = 0; i < 4; i++) if (fatc[i]) { afree(fatc[i]); fatc[i] = 0; }
     V.ok = 0;
+    if (!boot_open || release_due) { release_due = 0; dev_release(); }
 }
 
 void fatdir_release(void)
 {
-#ifndef FATDIR_HOST
-    if (dev) { dev_close(dev); fd_free(dev); dev = 0; }
-#endif
+    boot_open = 0;
+    dev_release();
 }
+void fatdir_close(void) { dev_release(); }
+
+#ifndef FATDIR_HOST
+/* Volume unmount (0x0806aa08: disk mode, among others) waits until the device has no users
+   (0x0828c34c polls every 100 ms): our raw handle is closed first, or at the end of a running session. */
+static void __attribute__((used)) unmount_c(void) { if (V.ok) release_due = 1; else dev_release(); }
+__attribute__((naked, section(".text.entry"), used)) void hk_unmount(void)
+{
+    __asm__ volatile(
+        "push {r0-r5, ip, lr}\n ldr ip, 1f\n mov lr, pc\n bx ip\n"
+        "pop {r0-r5, ip, lr}\n"
+        ".word 0xe92d403e\n ldr pc, 2f\n"
+        "1: .word unmount_c\n 2: .word 0x0806aa0c\n");
+}
+#endif
 
 static uint32_t next_cluster(uint32_t c)
 {

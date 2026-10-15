@@ -213,8 +213,7 @@ void settings_early(void)
     { void prof_mark(const char *); void prof_stop(int); void fat_state_log(const char *); fat_state_log("at ui init"); prof_mark("ui init"); prof_stop(1); }
 #endif
 #endif
-    fatdir_release();                  /* the library load's raw reads are done */
-    if (file_loaded) log_flush();
+    if (file_loaded) log_flush();      /* the raw handle stays open (fatdir.c): closing it would power the drive down before this write */
 }
 
 /* ---- library load (file system up): the settings file is authoritative for the next start ---- */
@@ -361,6 +360,7 @@ static int __attribute__((used)) tick_c(uint32_t *r)
     static int noted = -1;
     (void)r;
     { void power_resume_check(void); power_resume_check(); }
+    { void rtxcbug_tick(void); rtxcbug_tick(); }   /* FLAC\rtxcbug-tick.txt dumps (semihost.c) */
     if (settings_mode == 2) {
         int m = is_night();
         if (m != applied && m != noted) {

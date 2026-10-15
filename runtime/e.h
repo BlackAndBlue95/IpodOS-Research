@@ -14,6 +14,8 @@ void log_x(uint32_t v, int digits);
 void log_d(int v);
 void log_name(const char *s);
 int log_tail(char *dst, int n);
+int log_mark(void);
+int log_take(int mark, char *dst, int max);
 int log_flush(void);
 void crumb(const char *name);                /* DIAG: first call of a hook between ui init and the first frame */
 void crumb_state(int s);                     /* 1 ui init, 2 first frame */
@@ -41,8 +43,9 @@ const struct sync_album *sync_albums(int *n);        /* the last scan's album fo
 
 /* fatdir.c: folder listings read straight from the FAT32 volume */
 int fatdir_begin(void);                              /* opens the block device, reads the BPB; 0 ok */
-void fatdir_end(void);                               /* the device stays open */
+void fatdir_end(void);                               /* the device stays open during the boot, then closes */
 void fatdir_release(void);                           /* closes the device: after the boot's last raw read */
+void fatdir_close(void);                             /* closes the device, the boot window unchanged */
 int fatdir_list(const char *path, int (*cb)(void *ctx, const char *name, int is_dir, uint32_t size, uint16_t date, uint16_t time), void *ctx);
 extern int fatdir_reads;
 uint32_t fatdir_free_clusters(uint32_t *nclus);      /* FSInfo free clusters, 0 if unusable; *nclus = clusters on the volume */
