@@ -152,8 +152,8 @@ int main(int argc, char **argv)
         return 2;
     }
     rc = ls_sync(&o, mem, memsz, &r);
-    printf("rc=%d tracks=%d flacs=%d kept=%d updated=%d added=%d removed=%d skipped=%d renamed=%d migrated=%d noalbum=%d verified=%d reordered=%d wrote=%d playcounts=%d playlists=%d%s%s\n",
-           rc, r.tracks, r.flacs, r.kept, r.updated, r.added, r.removed, r.skipped, r.renamed, r.migrated, r.noalbum, r.verified, r.reordered,
+    printf("rc=%d tracks=%d flacs=%d videos=%d kept=%d updated=%d added=%d removed=%d skipped=%d renamed=%d migrated=%d musicapp=%d noalbum=%d verified=%d reordered=%d wrote=%d playcounts=%d playlists=%d%s%s\n",
+           rc, r.tracks, r.flacs, r.videos, r.kept, r.updated, r.added, r.removed, r.skipped, r.renamed, r.migrated, r.musicapp, r.noalbum, r.verified, r.reordered,
            r.wrote, r.playcounts, r.playlists, r.msg[0] ? " msg=" : "", r.msg);
     return rc < 0;
 }

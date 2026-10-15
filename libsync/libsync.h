@@ -1,4 +1,5 @@
-/* libsync: keeps the iPod's iTunesDB in sync with the .flac files under /Music.
+/* libsync: keeps the iPod's iTunesDB in sync with the .flac files under /Music and the TV
+ * episodes (.m4v, .mp4) under /TV Shows.
  * Incremental mode (the plugin): entries whose file is unchanged (same location, size and
  * mtime) are kept byte for byte; changed files keep their id, dbid, play counts and rating;
  * new files are added and missing ones dropped. Nothing is written if nothing changed.
@@ -33,9 +34,11 @@ struct ls_opts {
 struct ls_result {
     int tracks;          /* tracks in the database afterwards */
     int flacs;           /* .flac files found under /Music */
+    int videos;          /* .m4v and .mp4 files found under /TV Shows */
     int kept, updated, added, removed, skipped;
     int renamed;         /* entries carried over to a moved or renamed file */
     int migrated;        /* entries of an older sync rebuilt (marker or string order) */
+    int musicapp;        /* unchanged entries the Music app rewrote, kept (see LS_MARK) */
     int noalbum;         /* FLAC entries without an ALBUM tag (the OS lists those under no album) */
     int verified;        /* 1 if the new image passed ls_verify */
     int reordered;       /* 1 if the track list was put back in id order */

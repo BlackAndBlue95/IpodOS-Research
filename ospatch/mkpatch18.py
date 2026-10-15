@@ -128,6 +128,7 @@ if a.hooks == 'all':
         retarget(at, 0x080605c8, sym['e_loc_path'])            # record -> path
     # function entries
     entry_hook(0x08133980, 0xe92d47f0, 0xe24dde31, sym['hk_gtl'])
+    entry_hook(0x081447fc, 0xe92d407f, 0xe1a05000, sym['hk_fmark_reg'])   # frame marker registration: panel FMARK on (panel.c)
     entry_hook(0x0826d8e0, 0xe92d43f8, 0xe1a04000, sym['hk_seek'])
     entry_hook(0x0826d5fc, 0xe92d47f0, 0xe24dd020, sym['hk_read'])
     entry_hook(0x0828a5ac, 0xe92d43f0, 0xe1a04000, sym['hk_parse'])

@@ -428,12 +428,13 @@ void sync_library(int task)
     sync_no_db = rc < 0 && r.msg[0] == 'n' && r.msg[1] == 'o' && r.msg[2] == ' ' && r.msg[3] == 'i';
     log_s("   sync: ");
     if (rc < 0) { log_s("not done: "); log_s(r.msg); }
-    else if (!r.wrote) { log_d(r.flacs); log_s(" FLACs, up to date"); }
+    else if (!r.wrote) { log_d(r.flacs); log_s(" FLACs"); if (r.videos) { log_s(", "); log_d(r.videos); log_s(" videos"); } log_s(", up to date"); }
     else {
         log_s("+"); log_d(r.added); log_s(" new, "); log_d(r.updated); log_s(" changed, -"); log_d(r.removed);
         log_s(" gone, "); log_d(r.renamed); log_s(" renamed, "); log_d(r.migrated); log_s(" migrated, ");
         log_d(r.tracks); log_s(" tracks, verify ok"); if (r.reordered) log_s(", list put in id order"); if (r.playcounts) log_s(", play counts merged");
     }
+    if (r.musicapp) { log_s(", "); log_d(r.musicapp); log_s(" kept from the Music app"); }
     if (r.skipped) { log_s(", "); log_d(r.skipped); log_s(" unreadable"); }
     if (r.noalbum) { log_s(", "); log_d(r.noalbum); log_s(" without album tag"); }
     { extern int names_rebuilt; log_s(", "); log_d(names_rebuilt); log_s(" long names rebuilt"); names_rebuilt = 0; }

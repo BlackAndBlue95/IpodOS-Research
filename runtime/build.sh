@@ -2,7 +2,7 @@
 # builds region E: e.bin (raw, runs at 0x08b33000) and e.syms (nm output for mkpatch18.py)
 cd "$(dirname "$0")" || exit 1
 T=${ARM_TOOLCHAIN:-$(cd .. && pwd)/build/arm-gnu-toolchain-13.3.rel1-darwin-arm64-arm-none-eabi/bin}
-SRC="battery.c libload.c log.c osfile.c update.c updscreen.c uifast.c artdb.c fatdir.c path.c power.c theme.c theme_rules.c settings.c sun.c ossync.c
+SRC="battery.c libload.c log.c osfile.c update.c updscreen.c uifast.c artdb.c fatdir.c path.c power.c theme.c theme_rules.c settings.c sun.c ossync.c panel.c
      flac/flacblob.c flac/cover.c flac/tjpgd.c flac/rbjpeg.c flac/rbflac.c flac/rbflac_arm.S
      flac/rbfir.c flac/rbfir_arm.S"
 # PROF=1: the library-load profiler (tools/gen_prof.py writes prof_tramp.S)

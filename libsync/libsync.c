@@ -13,6 +13,8 @@
 #endif
 
 #define FLAC_TYPE   0x464c4143u     /* mhit filetype 'FLAC' */
+#define M4V_TYPE    0x4d345620u     /* 'M4V ', the TV episodes under /TV Shows */
+#define MT_TVSHOW   0x40            /* mhit media type */
 #define MAC_EPOCH   2082844800u
 #define MAXFILES    32768
 #define MAXDE       16384           /* entries on the scan stack: one folder and its ancestors */
@@ -25,7 +27,14 @@
 /* Entry version marker at LS_MARK, in the zero tail of the 0x270-byte track header (0x210..0x26f
    is zero in entries written by the OS or iTunes): 'FLSY', u16 version, u16 flags, u32 sync
    generation, u32 reserved. Entries without the current marker are rebuilt once, keeping
-   id, dbid, dates and play counts. */
+   id, dbid, dates and play counts.
+   The Music app rewrites the database whenever the iPod connects to a Mac. It keeps every entry's
+   fields and string records (it moves the comment record after the file type, sets 0x1e0 to 0x81
+   and writes rates over 65535 Hz as 0xffffffff) but zeroes the marker. So each successful write
+   also leaves LS_STATE (FLAC/libsync.state: 'FLSY', u16 version, u16 0). While it holds the
+   current version, an unchanged FLAC entry whose marker is all zero is taken as one of ours
+   rewritten by the Music app: it is kept as it is, play counts the Music app merged in
+   included, and stamped when the database is next written. */
 #define LS_MARK       0x258
 #define LS_VER        4
 #define LS_F_FNTITLE  1             /* title taken from the file name */
@@ -431,10 +440,11 @@ struct trk {
     uint8_t *h; uint32_t hl;            /* mhit header */
     const uint8_t *m; uint32_t ml, nm;  /* its mhods */
     int used;
+    int ours;                           /* a FLAC, or a file outside iPod_Control (see is_ours) */
     uint32_t oo;                        /* where build_db wrote it */
 };
 struct alb { const uint8_t *p; uint32_t len, id; const uint8_t *k[2]; uint32_t kn[2]; int mine; };
-struct fent { const char *path; uint32_t size, mtime; int old; int renamed; };
+struct fent { const char *path; uint32_t size, mtime; int old; int renamed; int video; int ord; };   /* ord: 1-based place among its folder's files */
 typedef struct ls_dirent de_t;      /* directory entries, passed to album_cb unchanged */
 struct fchunk { struct fchunk *next; int n; struct fent e[FCHUNK]; };
 
@@ -468,6 +478,25 @@ static int mhod_find(const uint8_t *m, uint32_t ml, uint32_t type, const uint8_t
     }
     *s = 0; *n = 0;
     return 0;
+}
+/* Entries this library owns: every FLAC, and the videos it adds from /TV Shows, told apart from
+   iTunes' own by a location outside iPod_Control (the Music app keeps locations, not markers). */
+static int loc_outside(const uint8_t *s, uint32_t n)
+{
+    static const char ctl[] = ":ipod_control:";
+    if (n < 2 * (sizeof ctl - 1)) return 1;
+    for (uint32_t i = 0; i < sizeof ctl - 1; i++) {
+        uint32_t c = g16(s + 2 * i);
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != (uint8_t)ctl[i]) return 1;
+    }
+    return 0;
+}
+static int is_ours(const uint8_t *h, const uint8_t *m, uint32_t ml)
+{
+    const uint8_t *s; uint32_t n;
+    if (g32(h + 24) == FLAC_TYPE) return 1;
+    return g32(h + 24) == M4V_TYPE && mhod_find(m, ml, 2, &s, &n) && loc_outside(s, n);
 }
 
 static int parse_db(void)
@@ -510,6 +539,7 @@ static int parse_db(void)
                 OT[k].h = (uint8_t *)(b + p); OT[k].hl = hl;
                 OT[k].m = b + p + hl; OT[k].ml = tl - hl; OT[k].nm = g32(b + p + 12);
                 OT[k].used = 0;
+                OT[k].ours = is_ours(OT[k].h, OT[k].m, OT[k].ml);
                 p += tl;
             }
             NOT = (int)n;
@@ -544,7 +574,8 @@ static int load_albums(void)
     return 0;
 }
 
-/* ---------------- scanning /Music ---------------- */
+/* ---------------- scanning /Music and /TV Shows ---------------- */
+static int g_video;             /* scanning /TV Shows: .m4v and .mp4 files, else .flac */
 static int de_cmp(const void *a, const void *b)
 {
     const uint8_t *x = (const uint8_t *)((const de_t *)a)->name;
@@ -552,19 +583,22 @@ static int de_cmp(const void *a, const void *b)
     while (*x && *x == *y) { x++; y++; }
     return (int)*x - (int)*y;
 }
-static int is_flac_name(const char *n)
+static int has_ext(const char *n, const char *ext)
 {
-    size_t l = LS_STRLEN(n);
-    static const char ext[] = ".flac";
-    if (l < 5 || (n[0] == '.' && n[1] == '_')) return 0;
-    for (int i = 0; i < 5; i++) {
-        char c = n[l - 5 + i];
+    size_t l = LS_STRLEN(n), e = LS_STRLEN(ext);
+    if (l <= e || (n[0] == '.' && n[1] == '_')) return 0;
+    for (size_t i = 0; i < e; i++) {
+        char c = n[l - e + i];
         if (c >= 'A' && c <= 'Z') c += 32;
         if (c != ext[i]) return 0;
     }
     return 1;
 }
-static int fadd(const char *p, uint32_t size, uint32_t mtime)
+static int is_media_name(const char *n)
+{
+    return g_video ? has_ext(n, ".m4v") || has_ext(n, ".mp4") : has_ext(n, ".flac");
+}
+static int fadd(const char *p, uint32_t size, uint32_t mtime, int ord)
 {
     struct fchunk *c = FCL;
     struct fent *e;
@@ -575,7 +609,7 @@ static int fadd(const char *p, uint32_t size, uint32_t mtime)
         FCL = c;
     }
     e = &c->e[c->n++];
-    e->path = p; e->size = size; e->mtime = mtime; e->old = -1; e->renamed = 0;
+    e->path = p; e->size = size; e->mtime = mtime; e->old = -1; e->renamed = 0; e->video = g_video; e->ord = ord;
     NF++;
     return 0;
 }
@@ -616,15 +650,15 @@ static int scan(int rl, int depth)
     for (i = start; i < DET; i++) {
         size_t n = LS_STRLEN(DE[i].name);
         char *p;
-        if (DE[i].is_dir || !is_flac_name(DE[i].name)) continue;
-        if (NF == MAXFILES) return fail("too many .flac files");
+        if (DE[i].is_dir || !is_media_name(DE[i].name)) continue;
+        if (NF == MAXFILES) return fail("too many files");
         if (rl + 1 + n >= PATHMAX) return fail("path too long");
         NEW(p, rl + n + 2);
         LS_MEMCPY(p, g_rel, rl);
         p[rl] = '/';
         LS_MEMCPY(p + rl + 1, DE[i].name, n + 1);
-        if (fadd(p, DE[i].size, DE[i].mtime) < 0) return -1;
-        if (!first++ && OP->album_cb) OP->album_cb(OP->cb_ctx, g_rel, p, DE + start, DET - start);
+        if (fadd(p, DE[i].size, DE[i].mtime, first + 1) < 0) return -1;
+        if (!first++ && OP->album_cb && !g_video) OP->album_cb(OP->cb_ctx, g_rel, p, DE + start, DET - start);
     }
     for (i = start; i < DET; i++) {
         size_t n = LS_STRLEN(DE[i].name);
@@ -662,12 +696,12 @@ static uint32_t key_hash(const uint16_t *k, int n)
 static int match_files(void)
 {
     uint32_t cap = 64, mask;
-    int *tab, i, nflac = 0;
+    int *tab, i, nours = 0;
     uint16_t *kb;
     uint8_t *u16;
     struct { uint16_t *k; int n; } *K;
-    for (i = 0; i < NOT; i++) if (g32(OT[i].h + 24) == FLAC_TYPE) nflac++;
-    while (cap < 2 * (uint32_t)nflac + 2) cap <<= 1;
+    for (i = 0; i < NOT; i++) if (OT[i].ours) nours++;
+    while (cap < 2 * (uint32_t)nours + 2) cap <<= 1;
     mask = cap - 1;
     NEW(tab, cap * sizeof *tab);
     NEW(K, (NOT + 1) * sizeof *K);
@@ -675,7 +709,7 @@ static int match_files(void)
     for (i = 0; i < NOT; i++) {
         const uint8_t *s; uint32_t n;
         K[i].k = 0; K[i].n = 0;
-        if (g32(OT[i].h + 24) != FLAC_TYPE || !mhod_find(OT[i].m, OT[i].ml, 2, &s, &n)) continue;
+        if (!OT[i].ours || !mhod_find(OT[i].m, OT[i].ml, 2, &s, &n)) continue;
         NEW(K[i].k, n + 2);
         K[i].n = loc_key(s, n, K[i].k);
         for (uint32_t h = key_hash(K[i].k, K[i].n) & mask; ; h = (h + 1) & mask)
@@ -732,12 +766,40 @@ static int has_marker(const struct trk *t)
 {
     return t->hl >= LS_MARK + 16 && !LS_MEMCMP(t->h + LS_MARK, "FLSY", 4) && g16(t->h + LS_MARK + 4) == LS_VER;
 }
+static int trust_unmarked;      /* LS_STATE says this version wrote the database last */
+static int marker_blank(const struct trk *t)
+{
+    for (int i = 0; i < 16; i++) if (t->h[LS_MARK + i]) return 0;
+    return 1;
+}
 /* Entries the OS would not resolve, or that come from an older sync, are rebuilt once. */
 static int needs_rebuild(const struct trk *t)
 {
     if (!last_is_loc(t)) return 1;
-    if (t->hl >= LS_MARK + 16 && !has_marker(t)) return 1;
+    if (t->hl >= LS_MARK + 16 && !has_marker(t) && !(trust_unmarked && marker_blank(t))) return 1;
+    /* an episode without remember-position (0xa6) */
+    if (t->hl > 0xaa && g32(t->h + 24) == M4V_TYPE && !t->h[0xa6]) return 1;
     return 0;
+}
+static int has_record(const struct trk *t, uint32_t type)
+{
+    uint32_t mo = 0, k;
+    for (k = 0; k < t->nm && mo + 16 <= t->ml; k++) {
+        uint32_t l = g32(t->m + mo + 8);
+        if (l < 16) break;
+        if (g32(t->m + mo + 12) == type) return 1;
+        mo += l;
+    }
+    return 0;
+}
+/* the marker of a kept entry the Music app rewrote, its flags read back from the records */
+static void restamp(struct trk *t)
+{
+    uint32_t fl = 0;
+    if (!has_record(t, 3)) fl |= LS_F_NOALBUM;
+    if (!has_record(t, 4) && !has_record(t, 22)) fl |= LS_F_NOARTIST;
+    LS_MEMCPY(t->h + LS_MARK, "FLSY", 4);
+    p16(t->h + LS_MARK + 4, LS_VER); p16(t->h + LS_MARK + 6, fl); p32(t->h + LS_MARK + 8, OP->now);
 }
 
 /* ---------------- renames ---------------- */
@@ -766,11 +828,11 @@ static int match_renames(void)
     uint16_t *kb, *kb2;
     uint8_t *u16;
     for (f = 0; f < NF; f++) if (F[f].old < 0) nnew++;
-    for (i = 0; i < NOT; i++) if (g32(OT[i].h + 24) == FLAC_TYPE && !OT[i].used) nrem++;
+    for (i = 0; i < NOT; i++) if (OT[i].ours && !OT[i].used) nrem++;
     if (!nnew || !nrem) return 0;
     NEW(rem, nrem * sizeof *rem);
     nrem = 0;
-    for (i = 0; i < NOT; i++) if (g32(OT[i].h + 24) == FLAC_TYPE && !OT[i].used) rem[nrem++] = i;
+    for (i = 0; i < NOT; i++) if (OT[i].ours && !OT[i].used) rem[nrem++] = i;
     NEW(u16, 4 * PATHMAX); NEW(kb, 4 * PATHMAX); NEW(kb2, 4 * PATHMAX);
     for (f = 0; f < NF; f++) {
         struct tags tg;
@@ -779,7 +841,7 @@ static int match_renames(void)
         const uint8_t *title;
         const char *base;
         int titlen, fromname, bn, kn;
-        if (F[f].old >= 0) continue;
+        if (F[f].old >= 0 || F[f].video) continue;     /* a moved video is added again */
         LS_SNPRINTF(g_path, sizeof g_path, "%s%s", OP->root, F[f].path);
         if (read_flac(g_path, &sr, &ns, &tg) < 0) continue;
         pick_title(&F[f], &tg, &title, &titlen, &fromname);
@@ -870,6 +932,183 @@ static int album_for(const uint8_t *al, int aln, const uint8_t *ar, int arn, uin
     return 0;
 }
 
+/* ---------------- TV episodes ---------------- */
+static uint32_t b32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+/* Length and audio rate from the MP4 boxes: mvhd, and the mp4a entry of the sound track's stsd.
+   Inside moov the containers on the way are stepped into, everything else is skipped. */
+static int read_mp4(const char *path, uint32_t *ms, uint32_t *sr)
+{
+    uint8_t b[64];
+    long p = 0, end;
+    int fd = ls_open_r(path), moov = 0;
+    *ms = 0; *sr = 0;
+    if (fd < 0) return -1;
+    end = ls_fsize(fd);
+    while (p + 8 <= end) {
+        uint64_t l;
+        uint32_t hl = 8;
+        if (ls_seek(fd, p) != p || ls_read(fd, b, 16) < 8) break;
+        l = b32(b);
+        if (l == 1) { l = (uint64_t)b32(b + 8) << 32 | b32(b + 12); hl = 16; }
+        else if (l == 0) l = (uint64_t)(end - p);
+        if (l < hl || l > (uint64_t)(end - p)) break;
+        if (!moov) {
+            if (!LS_MEMCMP(b + 4, "moov", 4)) { moov = 1; end = p + (long)l; p += hl; continue; }
+        } else if (!LS_MEMCMP(b + 4, "trak", 4) || !LS_MEMCMP(b + 4, "mdia", 4) ||
+                   !LS_MEMCMP(b + 4, "minf", 4) || !LS_MEMCMP(b + 4, "stbl", 4)) {
+            p += hl;
+            continue;
+        } else if (!LS_MEMCMP(b + 4, "mvhd", 4) && l >= 40 && ls_seek(fd, p + 8) == p + 8 && ls_read(fd, b, 32) == 32) {
+            uint64_t ts = b[0] ? b32(b + 20) : b32(b + 12);
+            uint64_t d = b[0] ? (uint64_t)b32(b + 24) << 32 | b32(b + 28) : b32(b + 16);
+            if (ts) *ms = (uint32_t)(d * 1000 / ts);
+        } else if (!LS_MEMCMP(b + 4, "stsd", 4) && l >= 52 && ls_seek(fd, p + 16) == p + 16 && ls_read(fd, b, 36) == 36) {
+            if (!LS_MEMCMP(b + 4, "mp4a", 4)) *sr = b32(b + 32) >> 16;
+        }
+        p += (long)l;
+    }
+    ls_close(fd);
+    return *ms ? 0 : -1;
+}
+static int is_num(char c) { return c >= '0' && c <= '9'; }
+static uint32_t num_at(const char *s, int n, int *i)
+{
+    uint32_t v = 0;
+    while (*i < n && is_num(s[*i]) && v < 100000) v = v * 10 + (uint32_t)(s[(*i)++] - '0');
+    return v;
+}
+/* /TV Shows/<show>/[Season N/]<name>.m4v. The season is the folder's number, or N of an SnnEnn
+   in the name; the episode is the Enn, or the number the name starts with (make_video falls back
+   to the file's place in its folder). What follows (past " - ", ". " and the like) is the title,
+   "Episode N" when nothing does. */
+struct tvname { const char *show; int shown; uint32_t season, episode; const char *title; int titlen; };
+static void tv_name(const char *path, struct tvname *v)
+{
+    const char *rel = path + sizeof "/TV Shows";
+    const char *last = rel, *dot;
+    int n, i;
+    LS_MEMSET(v, 0, sizeof *v);
+    for (const char *c = rel; *c; c++) if (*c == '/') last = c + 1;
+    v->show = rel;
+    for (v->shown = 0; rel[v->shown] && rel[v->shown] != '/'; v->shown++);
+    if (rel + v->shown + 1 < last) {            /* a folder between the show and the file */
+        const char *s = rel + v->shown + 1;
+        int sl = (int)(last - 1 - s);
+        for (i = 0; i < sl && !is_num(s[i]); i++);
+        if (i < sl) v->season = num_at(s, sl, &i);
+    }
+    for (dot = last + LS_STRLEN(last); dot > last && *dot != '.'; dot--);
+    n = (int)(dot - last);
+    if (last == rel) v->shown = n;              /* no show folder: the name is the show */
+    i = 0;
+    for (int k = 0; k + 1 < n; k++)
+        if ((last[k] == 'S' || last[k] == 's') && is_num(last[k + 1]) && (!k || !is_num(last[k - 1]))) {
+            int j = k + 1;
+            uint32_t s = num_at(last, n, &j);
+            if (j + 1 < n && (last[j] == 'E' || last[j] == 'e') && is_num(last[j + 1])) {
+                j++;
+                v->episode = num_at(last, n, &j);
+                if (!v->season) v->season = s;
+                i = j;
+                break;
+            }
+        }
+    if (!i && n && is_num(last[0])) v->episode = num_at(last, n, &i);
+    while (i < n && (last[i] == ' ' || last[i] == '-' || last[i] == '.' || last[i] == '_')) i++;
+    if (!v->season) v->season = 1;
+    v->title = last + i; v->titlen = n - i;
+    if (!i) { v->title = last; v->titlen = n; }
+}
+static int make_video(const struct fent *f, uint32_t id, const struct trk *old)
+{
+    struct tvname v;
+    char album[PATHMAX], epid[16], title[24];
+    uint32_t ms, sr, aid = 0, n, hl = tmpl_hl;
+    int albn, epn, ttn;
+    const uint8_t *tt;
+    uint8_t *h, *q;
+    union { float f; uint32_t u; } fsr;
+    struct trk *t = &T[NT];
+    static const char ftype[] = "MPEG-4 video file";
+
+    LS_SNPRINTF(g_path, sizeof g_path, "%s%s", OP->root, f->path);
+    if (read_mp4(g_path, &ms, &sr) < 0)
+        return 0;
+    tv_name(f->path, &v);
+    if (!v.episode) v.episode = (uint32_t)f->ord;   /* no number in the name: its place in the folder */
+    tt = (const uint8_t *)v.title; ttn = v.titlen;
+    if (!ttn) { ttn = LS_SNPRINTF(title, sizeof title, "Episode %u", (unsigned)v.episode); tt = (const uint8_t *)title; }
+    albn = LS_SNPRINTF(album, sizeof album, "%.*s, Season %u", v.shown, v.show, (unsigned)v.season);
+    if (albn >= (int)sizeof album) albn = sizeof album - 1;
+    epn = LS_SNPRINTF(epid, sizeof epid, "S%02uE%02u", (unsigned)v.season, (unsigned)v.episode);
+    if (album_for((const uint8_t *)album, albn, (const uint8_t *)v.show, v.shown, &aid) < 0)
+        return -1;
+
+    n = mhod_len(u8to16(tt, ttn, NULL, 0))
+      + 2 * mhod_len(u8to16((const uint8_t *)v.show, v.shown, NULL, 0))
+      + mhod_len(u8to16((const uint8_t *)album, albn, NULL, 0))
+      + mhod_len(2 * (uint32_t)epn)
+      + mhod_len(2 * (sizeof ftype - 1))
+      + mhod_len(u8to16((const uint8_t *)f->path, (int)LS_STRLEN(f->path), NULL, 0));
+    NEW(h, hl + n);
+    LS_MEMSET(h, 0, hl);
+    if (!old) {
+        uint8_t dbid[8];
+        rnd8(dbid);
+        LS_MEMCPY(h + 0x70, dbid, 8);
+    }
+    LS_MEMCPY(h, "mhit", 4);
+    p32(h + 4, hl); p32(h + 16, id); p32(h + 20, 1); p32(h + 24, M4V_TYPE);
+    p32(h + 32, mac_time(OP->full ? OP->now : f->mtime));
+    p32(h + 36, f->size);
+    p32(h + 40, ms);
+    p32(h + 44, v.episode);
+    p32(h + 56, (uint32_t)((uint64_t)f->size * 8 / (ms ? ms : 1)));
+    p32(h + 60, (sr < 0xffff ? sr : 0xffff) << 16);
+    p32(h + 0x68, mac_time(OP->now));
+    h[0x78] = 1;
+    fsr.f = (float)sr;
+    p32(h + 0x88, fsr.u);
+    h[0xa6] = 1;                        /* resume where it was left */
+    h[0xb1] = 1;                        /* video */
+    p32(h + 0xd0, MT_TVSHOW);
+    p32(h + 0xd4, v.season);
+    p32(h + 0xd8, v.episode);
+    p32(h + 0x120, aid);
+    LS_MEMCPY(h + 0x124, DB + 0x24, 8);
+    p32(h + 0x12c, f->size);
+    p32(h + 0x168, 1);
+    if (old && old->hl >= 0x164) {
+        static const uint16_t keep[][2] = {
+            { 0x10, 4 }, { 0x1f, 1 }, { 0x40, 0x1c }, { 0x68, 0x10 }, { 0x79, 1 },
+            { 0x7c, 8 }, { 0x9c, 9 }, { 0xb2, 1 }, { 0x160, 4 } };
+        for (unsigned j = 0; j < sizeof keep / sizeof keep[0]; j++)
+            LS_MEMCPY(h + keep[j][0], old->h + keep[j][0], keep[j][1]);
+    }
+    if (!h[0xb2]) h[0xb2] = 2;
+    p32(h + 0x100, 1);
+    if (hl >= 0x1f8) { p32(h + 0x1e0, 0x7f); p32(h + 0x1f4, id + 1); }
+    if (hl >= LS_MARK + 16) {
+        LS_MEMCPY(h + LS_MARK, "FLSY", 4);
+        p16(h + LS_MARK + 4, LS_VER); p32(h + LS_MARK + 8, OP->now);
+    }
+    /* title, artist and album as iTunes writes an episode (the show, "show, Season N"), then the
+       show and episode id records the TV Shows menus list by */
+    q = h + hl;
+    q = put_mhod(q, 1, tt, ttn, 0);
+    q = put_mhod(q, 4, (const uint8_t *)v.show, v.shown, 0);
+    q = put_mhod(q, 3, (const uint8_t *)album, albn, 0);
+    q = put_mhod(q, 19, (const uint8_t *)v.show, v.shown, 0);
+    q = put_mhod(q, 20, (const uint8_t *)epid, epn, 0);
+    q = put_mhod(q, 6, (const uint8_t *)ftype, sizeof ftype - 1, 0);
+    q = put_mhod(q, 2, (const uint8_t *)f->path, (int)LS_STRLEN(f->path), 1);
+    p32(h + 8, (uint32_t)(q - h));
+    p32(h + 12, 7);
+    t->h = h; t->hl = hl; t->m = h + hl; t->ml = (uint32_t)(q - h) - hl; t->nm = 7; t->used = 1; t->ours = 1;
+    NT++;
+    return 1;
+}
+
 /* Builds the entry for f as flacsync.py add_track() does. old, if set, is the entry replaced:
    its id, dbid, dates, counts, rating and artwork carry over. Returns 1 added, 0 skipped, -1 error. */
 static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
@@ -883,6 +1122,7 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
     union { float f; uint32_t u; } fsr;
     struct trk *t = &T[NT];
 
+    if (f->video) return make_video(f, id, old);
     LS_SNPRINTF(g_path, sizeof g_path, "%s%s", OP->root, f->path);
     if (read_flac(g_path, &sr, &ns, &tg) < 0)
         return 0;
@@ -981,7 +1221,7 @@ static int make_track(const struct fent *f, uint32_t id, const struct trk *old)
     q = put_mhod(q, 2, (const uint8_t *)f->path, (int)LS_STRLEN(f->path), 1); n++;
     p32(h + 8, (uint32_t)(q - h));
     p32(h + 12, n);
-    t->h = h; t->hl = hl; t->m = h + hl; t->ml = (uint32_t)(q - h) - hl; t->nm = n; t->used = 1;
+    t->h = h; t->hl = hl; t->m = h + hl; t->ml = (uint32_t)(q - h) - hl; t->nm = n; t->used = 1; t->ours = 1;
     NT++;
     return 1;
 }
@@ -1517,11 +1757,10 @@ int ls_verify(const uint8_t *db, uint32_t len, const uint8_t fwid[8], int marker
             ids = vmem(&v, (n + 1) * 4); sids = vmem(&v, (n + 1) * 4); dbids = vmem(&v, (n + 1) * 8);
             VF(!dbids, "out of memory", 0);
             for (uint32_t k = 0; k < n; k++) {
-                uint32_t thl, ttl, nm, q, sum = 0, ntitle = 0, nloc = 0, last = 0, flac;
+                uint32_t thl, ttl, nm, q, sum = 0, ntitle = 0, nloc = 0, last = 0, ours, outside = 0;
                 VF(p + 0x30 > o + stl || LS_MEMCMP(db + p, "mhit", 4), "track header", p);
                 thl = g32(db + p + 4); ttl = g32(db + p + 8); nm = g32(db + p + 12);
                 VF(thl < 0x30 || ttl < thl || ttl > o + stl - p, "track length", p);
-                flac = g32(db + p + 24) == FLAC_TYPE;
                 ids[k] = sids[k] = g32(db + p + 16);
                 VF(!ids[k], "track id 0", p);
                 VF(k && ids[k] <= ids[k - 1], "track ids not ascending", p);
@@ -1531,14 +1770,16 @@ int ls_verify(const uint8_t *db, uint32_t len, const uint8_t fwid[8], int marker
                     VF(q + 40 > p + ttl || LS_MEMCMP(db + q, "mhod", 4), "string record header", q);
                     ml = g32(db + q + 8); mt = g32(db + q + 12);
                     VF(ml < 24 || ml > p + ttl - q, "string record length", q);
-                    if (mt == 1 || mt == 2 || mt == 3 || mt == 4 || mt == 5 || mt == 6 || mt == 8 || mt == 12 || mt == 22)
+                    if (mt == 1 || mt == 2 || mt == 3 || mt == 4 || mt == 5 || mt == 6 || mt == 8 || mt == 12 ||
+                        mt == 19 || mt == 20 || mt == 22)
                         VF(ml < 40 || 40 + g32(db + q + 28) > ml, "string length", q);
                     if (mt == 1) ntitle++;
-                    if (mt == 2) nloc++;
+                    if (mt == 2) { nloc++; outside = loc_outside(db + q + 40, g32(db + q + 28)); }
                     last = mt;
                     q += ml;
                 }
-                if (flac) {
+                ours = g32(db + p + 24) == FLAC_TYPE || (g32(db + p + 24) == M4V_TYPE && outside);
+                if (ours) {
                     VF(q != p + ttl, "string records don't fill the entry", p);
                     VF(ntitle != 1, "title records", p);
                     VF(nloc != 1, "location records", p);
@@ -1830,11 +2071,29 @@ static int write_file(const char *path, const uint8_t *d, uint32_t n)
 }
 
 /* ---------------- the sync ---------------- */
-static char dbp[PATHMAX], tmp[PATHMAX], bak[PATHMAX], pcp[PATHMAX];  /* static, off the plugin's small stack */
+static char dbp[PATHMAX], tmp[PATHMAX], bak[PATHMAX], pcp[PATHMAX], stp[PATHMAX];  /* static, off the plugin's small stack */
+
+/* LS_STATE (see LS_MARK): which version wrote the database last */
+static int state_current(const char *path)
+{
+    uint8_t b[8];
+    int fd = ls_open_r(path), ok;
+    if (fd < 0) return 0;
+    ok = ls_read(fd, b, 8) == 8 && !LS_MEMCMP(b, "FLSY", 4) && g16(b + 4) == LS_VER;
+    ls_close(fd);
+    return ok;
+}
+static void state_write(const char *path)
+{
+    uint8_t b[8];
+    LS_MEMCPY(b, "FLSY", 4); p16(b + 4, LS_VER); p16(b + 6, 0);
+    write_file(path, b, 8);
+}
 
 int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *r)
 {
-    int fd, i, nflac_old = 0, todo = 0, done = 0, unordered = 0;
+    int fd, i, nflac_old = 0, nours_old = 0, todo = 0, done = 0, unordered = 0;
+    void *tv;
     uint32_t next_id = 0;
     long n;
 
@@ -1849,6 +2108,8 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
     LS_SNPRINTF(tmp, sizeof tmp, "%s.new", dbp);
     LS_SNPRINTF(bak, sizeof bak, "%s.old", dbp);
     LS_SNPRINTF(pcp, sizeof pcp, "%s/iPod_Control/iTunes/Play Counts", o->root);
+    LS_SNPRINTF(stp, sizeof stp, "%s/FLAC/libsync.state", o->root);
+    trust_unmarked = state_current(stp);
 
     /* A replace cut short (new file complete, old one moved away) is finished first. */
     fd = ls_open_r(dbp);
@@ -1864,16 +2125,29 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
     for (i = 0; i < NOT; i++) {
         if (g32(OT[i].h + 16) > next_id) next_id = g32(OT[i].h + 16);
         if (g32(OT[i].h + 24) == FLAC_TYPE) nflac_old++;
+        if (OT[i].ours) nours_old++;
     }
 
     NEW(DE, MAXDE * sizeof *DE);
     NEW(tagbuf, TAGLIM);
     ls_status("Scanning /Music");
     LS_SNPRINTF(g_rel, sizeof g_rel, "/Music");
+    g_video = 0;
     if (scan(6, 0) < 0) return -1;
-    if (compact_files() < 0) return -1;
     r->flacs = NF;
-    if (!o->full && !NF && nflac_old) {
+    /* /TV Shows is optional: without it the episodes are dropped */
+    LS_SNPRINTF(g_path, sizeof g_path, "%s/TV Shows", o->root);
+    if ((tv = ls_opendir(g_path))) {
+        ls_closedir(tv);
+        ls_status("Scanning /TV Shows");
+        LS_SNPRINTF(g_rel, sizeof g_rel, "/TV Shows");
+        g_video = 1;
+        if (scan(9, 0) < 0) return -1;
+        g_video = 0;
+    }
+    r->videos = NF - r->flacs;
+    if (compact_files() < 0) return -1;
+    if (!o->full && !r->flacs && nflac_old) {
         /* An empty or missing /Music is more likely a read failure than an intent to drop the library. */
         LS_SNPRINTF(r->msg, sizeof r->msg, "no .flac files found, keeping %d tracks", nflac_old);
         return -1;
@@ -1887,26 +2161,28 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
         int k = 0;
         next_id = 0;
         for (i = 0; i < NOT; i++)
-            if (g32(OT[i].h + 24) != FLAC_TYPE && g32(OT[i].h + 16) > next_id) next_id = g32(OT[i].h + 16);
+            if (!OT[i].ours && g32(OT[i].h + 16) > next_id) next_id = g32(OT[i].h + 16);
         for (int a = 0; a < NAL; a++) {
             int used = 0;
             for (i = 0; i < NOT && !used; i++)
-                used = g32(OT[i].h + 24) != FLAC_TYPE && g32(OT[i].h + 0x120) == AL[a].id;
+                used = !OT[i].ours && g32(OT[i].h + 0x120) == AL[a].id;
             if (used) AL[k++] = AL[a];
         }
         NAL = k;
-        r->removed = nflac_old;
+        r->removed = nours_old;
         todo = NF;
     } else {
         if (match_files() < 0) return -1;
         if (match_renames() < 0) return -1;
+        int unmarked = 0;
         for (int f = 0; f < NF; f++) {
             const struct trk *t = F[f].old >= 0 ? &OT[F[f].old] : NULL;
             if (!t || F[f].renamed) todo++;
             else if (g32(t->h + 0x24) != F[f].size || g32(t->h + 0x20) != mac_time(F[f].mtime)) todo++;
             else if (needs_rebuild(t)) todo++;
+            else if (t->hl >= LS_MARK + 16 && !has_marker(t)) unmarked++;
         }
-        r->removed = nflac_old;
+        r->removed = nours_old;
         for (i = 0; i < NOT; i++) if (OT[i].used) r->removed--;
         pl_check();
         /* a list not in ascending id order is rewritten even when no file changed */
@@ -1914,6 +2190,10 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
         if (!todo && !r->removed && !pl_changed && !unordered) {
             r->kept = NF;
             r->tracks = NOT;
+            r->musicapp = unmarked;     /* left as the Music app wrote them until the next write */
+            /* every entry carries this version's marker: the state can say so (a database
+               written before LS_STATE existed) */
+            if (!unmarked && !trust_unmarked && !o->db_out && !o->dry) state_write(stp);
             return 0;
         }
     }
@@ -1929,11 +2209,12 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
 
     NEW(T, (NOT + NF + 1) * sizeof *T);
     for (i = 0; i < NOT; i++)
-        if (g32(OT[i].h + 24) != FLAC_TYPE) T[NT++] = OT[i];
+        if (!OT[i].ours) T[NT++] = OT[i];
     for (int f = 0; f < NF; f++) {
-        const struct trk *old = (!o->full && F[f].old >= 0) ? &OT[F[f].old] : NULL;
+        struct trk *old = (!o->full && F[f].old >= 0) ? &OT[F[f].old] : NULL;
         int rc, same = old && !F[f].renamed && g32(old->h + 0x24) == F[f].size && g32(old->h + 0x20) == mac_time(F[f].mtime);
         if (same && !needs_rebuild(old)) {
+            if (old->hl >= LS_MARK + 16 && !has_marker(old)) { restamp(old); r->musicapp++; }
             T[NT++] = *old;
             r->kept++;
             if (has_marker(old) && (g16(old->h + LS_MARK + 6) & LS_F_NOALBUM)) r->noalbum++;
@@ -1986,6 +2267,7 @@ int ls_sync(const struct ls_opts *o, void *mem, size_t memsz, struct ls_result *
         if (ls_rename(dbp, bak) < 0) { ls_remove(tmp); return fail("can't move the old iTunesDB"); }
         if (ls_rename(tmp, dbp) < 0) { ls_rename(bak, dbp); return fail("can't put the new iTunesDB in place"); }
         if (r->playcounts) ls_remove(pcp);
+        if (!trust_unmarked) state_write(stp);
     }
     r->wrote = 1;
     return 0;

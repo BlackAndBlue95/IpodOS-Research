@@ -376,5 +376,134 @@ for a in albums_cb:
     ok &= n == len(ents) and kind == want[0] and src == want[1] and size == st.st_size and mtime == int(st.st_mtime)
 check(ok, 'listing counts and art sources match the rule (cover file by name, else the first .flac)')
 
+def music_app(raw):
+    """the database as the Music app rewrites it on connect: FLAC entry markers zeroed, 0x1e0 set
+    to 0x81, the comment record moved after the file type, signed again"""
+    d = bytearray(raw)
+    o = 0
+    while True:
+        o = d.find(b'mhit', o)
+        if o < 0: break
+        hl, tl, nm = u32(d, o + 4), u32(d, o + 8), u32(d, o + 12)
+        if hl == 0x270 and u32(d, o + 24) == 0x464C4143:
+            d[o + 0x258:o + 0x268] = bytes(16)
+            struct.pack_into('<I', d, o + 0x1e0, 0x81)
+            recs, q = [], o + hl
+            for _ in range(nm):
+                ml = u32(d, q + 8); recs.append((u32(d, q + 12), bytes(d[q:q + ml]))); q += ml
+            types = [t for t, _ in recs]
+            if 8 in types and 6 in types and types.index(8) < types.index(6):
+                c = recs.pop(types.index(8)); recs.insert([t for t, _ in recs].index(6) + 1, c)
+                d[o + hl:q] = b''.join(r for _, r in recs)
+        o += 4
+    return fs.h58sign(fs.FWID, bytes(d))
+
+print('19. the Music app rewrites the database: unchanged entries stay as it wrote them')
+state = os.path.join(root, 'FLAC', 'libsync.state')
+check(os.path.exists(state) and open(state, 'rb').read()[:6] == b'FLSY\x04\x00', 'state file written for v4')
+ours = open(dbp, 'rb').read()
+app = music_app(ours)
+open(dbp, 'wb').write(app)
+r = run('--now', str(NOW + 1900))
+NF19 = int(r['flacs'])
+check(r['rc'] == '0' and r['wrote'] == '0' and r['musicapp'] == str(NF19) and r['migrated'] == '0' and r['updated'] == '0',
+      'all %d kept, nothing read or written' % NF19)
+check(open(dbp, 'rb').read() == app, 'the database is left as the Music app wrote it')
+db19 = fs.DB(app); t19 = by_loc(db19)
+edit19 = os.path.join(edit_dir, sorted(f for f in os.listdir(edit_dir) if f.endswith('.flac'))[1])
+loc19 = ':' + os.path.relpath(edit19, root).replace('/', ':')
+o19 = t19[loc19].s(1); n19 = o19[:-1] + ('X' if o19[-1] != 'X' else 'Y')
+set_title(edit19, o19, n19)
+os.utime(edit19, (NOW + 1950, NOW + 1950))
+r = run('--now', str(NOW + 2000))
+raw19, db19b = load(dbp); validate(raw19, db19b); verify(dbp)
+check(r['wrote'] == '1' and r['updated'] == '1' and r['musicapp'] == str(NF19 - 1) and r['migrated'] == '0',
+      'one changed file rebuilt, the other %d kept and stamped' % (NF19 - 1))
+check(marker_ok(db19b), 'every FLAC entry carries the v4 marker again')
+a19, b19 = by_loc(db19), by_loc(db19b)
+check(all(bytes(b19[k].hdr[:0x258]) == bytes(a19[k].hdr[:0x258]) and bytes(b19[k].hdr[0x268:]) == bytes(a19[k].hdr[0x268:]) and b19[k].mhods == a19[k].mhods
+          for k in a19 if k != loc19 and k in b19 and a19[k].u(24) == 0x464C4143),
+      'kept entries are the Music app\'s bytes but for the marker')
+check(b19[loc19].s(1) == n19, 'the changed file has its new title')
+os.remove(state)
+app = music_app(open(dbp, 'rb').read())
+open(dbp, 'wb').write(app)
+r = run('--now', str(NOW + 2100))
+check(r['wrote'] == '1' and r['migrated'] == str(NF19) and r['musicapp'] == '0', 'without the state file every entry is rebuilt, as before')
+check(os.path.exists(state), 'and the state file is written again')
+
+def box(typ, body): return struct.pack('>I', 8 + len(body)) + typ + body
+
+def mp4(path, secs, rate=44100):
+    """the boxes read_mp4 reads: mvhd (600 ticks a second) and a sound track's mp4a entry"""
+    mvhd = box(b'mvhd', bytes(12) + struct.pack('>II', 600, 600 * secs) + bytes(80))
+    mp4a = struct.pack('>I', 36) + b'mp4a' + bytes(6) + struct.pack('>H', 1) + bytes(8) + struct.pack('>HHHHI', 2, 16, 0, 0, rate << 16)
+    stbl = box(b'stbl', box(b'stsd', struct.pack('>II', 0, 1) + mp4a))
+    moov = box(b'moov', mvhd + box(b'trak', box(b'mdia', box(b'minf', stbl))))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, 'wb').write(box(b'ftyp', b'M4V \0\0\0\1') + moov + box(b'mdat', bytes(4096)))
+
+M4V = 0x4D345620
+def videos(db): return {t.s(2): t for t in db.tracks if t.u(24) == M4V}
+
+print('20. TV episodes under /TV Shows')
+tv = os.path.join(root, 'TV Shows')
+EPS = {'Show A/Season 2/S02E03 - Pilot.m4v': (90, 2, 3, 'Pilot', 'Show A'),
+       'Show A/Season 2/S02E04.m4v': (95, 2, 4, 'Episode 4', 'Show A'),
+       'Show B/Intro.mp4': (60, 1, 1, 'Intro', 'Show B'),
+       'Show B/Second.mp4': (61, 1, 2, 'Second', 'Show B')}
+for rel, (secs, *_) in EPS.items(): mp4(os.path.join(tv, rel), secs)
+r = run('--now', str(NOW + 2200))
+raw20, db20 = load(dbp); validate(raw20, db20); verify(dbp)
+check(r['wrote'] == '1' and r['videos'] == '4' and r['added'] == '4' and r['removed'] == '0', 'four episodes added')
+v20 = videos(db20)
+ok = len(v20) == 4
+for rel, (secs, season, ep, title, show) in EPS.items():
+    t = v20.get(':TV Shows:' + rel.replace('/', ':'))
+    ok &= bool(t) and t.u(40) == secs * 1000 and t.u(0xd4) == season and t.u(0xd8) == ep and t.u(0xd0) == 0x40 \
+        and t.hdr[0xa6] == 1 and t.hdr[0xaa] == 0 and t.hdr[0xb1] == 1 and t.s(1) == title and t.s(4) == show \
+        and t.s(3) == '%s, Season %d' % (show, season) and t.s(19) == show and t.s(20) == 'S%02dE%02d' % (season, ep) \
+        and struct.unpack('<f', bytes(t.hdr[0x88:0x8c]))[0] == 44100
+check(ok, 'show, season, episode (from SnnEnn, else the place in the folder), title, length, rate and flags')
+def nflac(db): return sum(t.u(24) == 0x464C4143 for t in db.tracks)
+check(nflac(db20) == int(r['flacs']) and int(r['kept']) == int(r['flacs']), 'the FLAC entries are all still there')
+r = run('--now', str(NOW + 2300))
+check(r['rc'] == '0' and r['wrote'] == '0' and r['kept'] == str(int(r['flacs']) + 4), 'again: nothing to do')
+
+# an episode with 0xaa (inside dbid2) set in place of 0xa6, remember position
+loc = ':TV Shows:Show B:Intro.mp4'
+d = bytearray(raw20); o = 0; t = v20[loc]
+while (o := d.find(b'mhit', o)) >= 0:
+    if u32(d, o + 16) == t.id: d[o + 0xa6] = 0; d[o + 0xaa] = 1; break
+    o += 4
+open(dbp, 'wb').write(fs.h58sign(fs.FWID, bytes(d)))
+r = run('--now', str(NOW + 2400))
+raw20b, db20b = load(dbp); validate(raw20b, db20b); verify(dbp)
+t2 = videos(db20b)[loc]
+check(r['wrote'] == '1' and r['migrated'] == '1' and r['added'] == '0', 'that entry rebuilt once')
+check(t2.hdr[0xa6] == 1 and t2.hdr[0xaa] == 0 and t2.id == t.id and bytes(t2.dbid) == bytes(t.dbid), 'with 0xa6 set, 0xaa clear, id and dbid kept')
+
+print('21. the Music app rewrites the database with episodes in it')
+d = bytearray(open(dbp, 'rb').read()); o = 0
+while (o := d.find(b'mhit', o)) >= 0:
+    if u32(d, o + 4) == 0x270 and u32(d, o + 24) == M4V: d[o + 0x258:o + 0x268] = bytes(16)
+    o += 4
+app = music_app(fs.h58sign(fs.FWID, bytes(d)))
+open(dbp, 'wb').write(app)
+r = run('--now', str(NOW + 2500))
+check(r['rc'] == '0' and r['wrote'] == '0' and r['videos'] == '4' and r['added'] == '0' and r['removed'] == '0',
+      'episode entries without our marker are kept, nothing written')
+
+print('22. episodes removed')
+os.remove(os.path.join(tv, 'Show A/Season 2/S02E04.m4v'))
+r = run('--now', str(NOW + 2600))
+raw22, db22 = load(dbp); validate(raw22, db22); verify(dbp)
+check(r['wrote'] == '1' and r['removed'] == '1' and r['videos'] == '3' and len(videos(db22)) == 3, 'one file gone: its entry removed')
+shutil.rmtree(tv)
+r = run('--now', str(NOW + 2700))
+raw22b, db22b = load(dbp); validate(raw22b, db22b); verify(dbp)
+check(r['wrote'] == '1' and r['removed'] == '3' and r['videos'] == '0' and not videos(db22b), 'no /TV Shows: the episodes dropped')
+check(nflac(db22b) == int(r['flacs']) and r['kept'] == r['flacs'], 'and every FLAC entry kept')
+
 print('\n%s' % ('ALL PASSED' if not fails else '%d FAILED' % fails))
 sys.exit(1 if fails else 0)

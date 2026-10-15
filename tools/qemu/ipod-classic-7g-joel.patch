@@ -1,0 +1,523 @@
+diff --git a/hw/arm/ipod_classic/ipod_classic.c b/hw/arm/ipod_classic/ipod_classic.c
+index 9257777..f4e4c84 100644
+--- a/hw/arm/ipod_classic/ipod_classic.c
++++ b/hw/arm/ipod_classic/ipod_classic.c
+@@ -28,6 +28,7 @@
+ #include "hw/arm/ipod_classic/ipod_classic.h"
+ #include "hw/arm/ipod_classic/ipod_classic_cs42l55.h"
+ #include "hw/arm/ipod_classic/ipod_classic_timer.h"
++#include "hw/arm/ipod_classic/ipod_classic_eic.h"
+ /* The S5L8720's SHA-1 block; the S5L8702 drives the same register map. */
+ #include "hw/arm/ipod_touch_sha1.h"
+ #include "hw/sysbus.h"
+@@ -83,10 +84,72 @@ static void ipod_classic_cpu_setup(MachineState *machine, MemoryRegion **sysmem,
+  * guest is free to overwrite and because a guest-requested reboot (SWRCON)
+  * has to come back to a machine that looks freshly powered on.
+  */
++
++/*
++ * SHA-1 engine at 0x38000000, as Rockbox's crypto-s5l8702.c drives it: software pads the
++ * message; each 64-byte block goes into DATAIN (+0x40, 16 words, bytes in memory order), then
++ * CONFIG |= 2 starts it (bit 0 busy, always clear here); bit 3 set in the same write continues
++ * from the previous block, clear starts a new hash. RESULT (+0x20, 5 words) holds the digest in
++ * byte order. RESET (+0x04) bit 0 resets. The start bit clears when the block is done. Without it every digest read as zero (the iTunesDB
++ * signature check then only accepted an all-zero signature).
++ */
++typedef struct { uint32_t h[5], in[16], config; } IPodSHA1;
++static IPodSHA1 ipod_sha1;
++static uint32_t sha_rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
++static void sha1_block(IPodSHA1 *s)
++{
++    uint32_t w[80], a, b, c, d, e, f, k, t;
++    int i;
++    for (i = 0; i < 16; i++) w[i] = bswap32(s->in[i]);
++    for (i = 16; i < 80; i++) w[i] = sha_rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
++    a = s->h[0]; b = s->h[1]; c = s->h[2]; d = s->h[3]; e = s->h[4];
++    for (i = 0; i < 80; i++) {
++        if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
++        else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
++        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
++        else { f = b ^ c ^ d; k = 0xca62c1d6; }
++        t = sha_rol(a, 5) + f + e + k + w[i];
++        e = d; d = c; c = sha_rol(b, 30); b = a; a = t;
++    }
++    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
++}
++static void sha1_init(IPodSHA1 *s)
++{
++    s->h[0] = 0x67452301; s->h[1] = 0xefcdab89; s->h[2] = 0x98badcfe; s->h[3] = 0x10325476; s->h[4] = 0xc3d2e1f0;
++}
++static uint64_t ipod_sha1_read(void *opaque, hwaddr off, unsigned size)
++{
++    IPodSHA1 *s = opaque;
++    if (getenv("SHATRACE") && (off < 0x40 || off >= 0x80)) fprintf(stderr, "SHA RD +0x%02x\n", (unsigned)off);
++    if (off == 0x00) return s->config & ~1u;
++    if (off >= 0x20 && off < 0x34) return bswap32(s->h[(off - 0x20) / 4]);
++    if (off >= 0x40 && off < 0x80) return s->in[(off - 0x40) / 4];
++    return 0;
++}
++static void ipod_sha1_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
++{
++    IPodSHA1 *s = opaque;
++    if (getenv("SHATRACE") && (off < 0x40 || off >= 0x80 || off == 0x40)) fprintf(stderr, "SHA WR +0x%02x = 0x%08x\n", (unsigned)off, (unsigned)val);
++    if (off == 0x04) { if (val & 1) { sha1_init(s); s->config = 0; } return; }
++    if (off >= 0x40 && off < 0x80) { s->in[(off - 0x40) / 4] = val; return; }
++    if (off == 0x00) {
++        s->config = val;
++        if (val & 2) {                   /* start: bit 3 continues the running hash */
++            if (!(val & 8)) sha1_init(s);
++            sha1_block(s);
++            s->config &= ~2u;            /* done at once; the start bit clears, as busy would */
++        }
++    }
++}
++static const MemoryRegionOps ipod_sha1_ops = {
++    .read = ipod_sha1_read, .write = ipod_sha1_write, .endianness = DEVICE_NATIVE_ENDIAN,
++    .valid = { .min_access_size = 4, .max_access_size = 4 },
++};
++
+ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
+ {
+     uint32_t sysinfo[S5L8702_SYSINFO_SIZE / 4] = {
+-        [S5L8702_SYSINFO_HW_ID_OFF / 4]     = cpu_to_le32(S5L8702_HW_ID),
++        [S5L8702_SYSINFO_HW_ID_OFF / 4]     = cpu_to_le32(getenv("IPOD_HWID") ? (uint32_t)strtoul(getenv("IPOD_HWID"), NULL, 0) : S5L8702_HW_ID),
+         [S5L8702_SYSINFO_DRAM_SIZE_OFF / 4] = cpu_to_le32(SDRAM_MEM_SIZE),
+         [S5L8702_SYSINFO_DRAM_BASE_OFF / 4] = cpu_to_le32(SDRAM_MEM_BASE),
+     };
+@@ -111,6 +174,16 @@ static void ipod_classic_write_bootinfo(IPodClassicMachineState *nms)
+     }
+ 
+     cpu_physical_memory_write(S5L8702_BOOTINFO_BASE, zero, sizeof(zero));
++    if (getenv("IPOD_SYSINFO")) {         /* a SysInfo dumped from a real iPod, as its bootloader passed it */
++        FILE *f = fopen(getenv("IPOD_SYSINFO"), "rb");
++        if (f) {
++            size_t got = fread(sysinfo, 1, sizeof(sysinfo), f);
++            fclose(f);
++            (void)got;
++            sysinfo[S5L8702_SYSINFO_DRAM_SIZE_OFF / 4] = cpu_to_le32(SDRAM_MEM_SIZE);
++            sysinfo[S5L8702_SYSINFO_DRAM_BASE_OFF / 4] = cpu_to_le32(SDRAM_MEM_BASE);
++        }
++    }
+     cpu_physical_memory_write(S5L8702_SYSINFO_BASE, sysinfo, sizeof(sysinfo));
+     cpu_physical_memory_write(S5L8702_BOOTINFO_TAG, &tag, sizeof(tag));
+     cpu_physical_memory_write(S5L8702_BOOTINFO_PTR, &ptr, sizeof(ptr));
+@@ -525,7 +598,7 @@ ipod_classic_unimplemented[] = {
+     { "s5l8702.aes",      AES_MEM_BASE,      0x100000 },
+     { "s5l8702.adm-sfr",  ADM_SFR_MEM_BASE,  0x100000 },
+     { "s5l8702.lcd-win",  LCD_WIN_MEM_BASE,  0x100000 },
+-    { "s5l8702.eic",      EIC_MEM_BASE,      0x100000 },
++    /* s5l8702.eic (0x39a00000) is a real (minimal) device now; see the machine init. */
+     { "s5l8702.ecc",      ECC_MEM_BASE,      0x100000 },
+     /* The click wheel is a real device now; see the machine init. */
+     { "s5l8702.usb-phy",  USBPHYS_MEM_BASE,  0x100000 },
+@@ -1006,7 +1079,12 @@ static void ipod_classic_machine_init(MachineState *machine)
+      * the block behaved differently -- and that is not a difference any A/B
+      * comparison between the two should be carrying.
+      */
+-    create_unimplemented_device("s5l8702.sha1", SHA1_MEM_BASE, 0x100000);
++    {
++        MemoryRegion *shamr = g_new(MemoryRegion, 1);
++        sha1_init(&ipod_sha1);
++        memory_region_init_io(shamr, NULL, &ipod_sha1_ops, &ipod_sha1, "s5l8702.sha1", 0x1000);
++        memory_region_add_subregion(get_system_memory(), SHA1_MEM_BASE, shamr);
++    }
+     if (!getenv("SHA1_OFF")) {
+         dev = qdev_new("ipodtouch.sha1");
+         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+@@ -1049,6 +1127,21 @@ static void ipod_classic_machine_init(MachineState *machine)
+     sysbus_connect_irq(SYS_BUS_DEVICE(edgeic), 0,
+                        s5l8702_get_irq(nms, S5L8702_VDEC_IRQ));
+ 
++    /*
++     * External (GPIO) interrupt controller: group g drives EINT(6 - g), which are
++     * VIC lines 0..3 (EINT0..3) and 31..33 (EINT4..6). It carries the LCD frame
++     * marker the video presenter waits for; see ipod_classic_eic.h.
++     */
++    {
++        static const int eint_line[7] = { 0, 1, 2, 3, 31, 32, 33 };
++        DeviceState *eic = qdev_new(TYPE_IPOD_CLASSIC_EIC);
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(eic), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(eic), 0, EIC_MEM_BASE);
++        for (int g = 0; g < 7; g++) {
++            sysbus_connect_irq(SYS_BUS_DEVICE(eic), g, s5l8702_get_irq(nms, eint_line[6 - g]));
++        }
++    }
++
+     /*
+      * Display/scaler output frame-done at 0x39300000, VIC line 30. The guest's
+      * video engine registers handler 0x0808b66c there; it acks at +0x280 and
+diff --git a/hw/arm/ipod_classic/ipod_classic_disp.c b/hw/arm/ipod_classic/ipod_classic_disp.c
+index 410875e..2fe236b 100644
+--- a/hw/arm/ipod_classic/ipod_classic_disp.c
++++ b/hw/arm/ipod_classic/ipod_classic_disp.c
+@@ -414,6 +414,19 @@ static bool disp_draw_yuv_layer(IPodClassicDispState *s, uint16_t *fb,
+     if (ysrc == 0 || usrc == 0 || vsrc == 0 || dw <= 0 || dh <= 0) {
+         return false;
+     }
++    /*
++     * Scaled video: a 640x480 frame is programmed with the destination limit at
++     * the SOURCE size and +0x04c (DST_SIZE) = 0x20002000, which halves it onto the
++     * 320x240 panel (measured with DISPTRACE: limit 0x028001e0). The planes come
++     * in the uncached alias (0x8xxxxxxx), folded back onto DRAM here.
++     */
++    int scale = 1;
++    if (x0 == 0 && y0 == 0 && x1 == 2 * (int)width && y1 == 2 * (int)height &&
++        s->reg[0x04c >> 2] == 0x20002000) {
++        scale = 2;
++        x1 = width; y1 = height; dw = width; dh = height;
++    }
++    ysrc &= 0x0fffffff; usrc &= 0x0fffffff; vsrc &= 0x0fffffff;
+     /*
+      * Only the full-panel blit is the video layer. The user interface also
+      * programs this path (the episode list writes a 240x240 destination), so
+@@ -437,27 +450,29 @@ static bool disp_draw_yuv_layer(IPodClassicDispState *s, uint16_t *fb,
+         return false;
+     }
+ 
++    /* scale 2: every other source pixel and row (no filtering) */
+     for (int row = 0; row < dh; row++) {
+         const uint8_t *yp = s->rowbuf;
+-        const uint8_t *up = s->rowbuf + width;      /* chroma <= width/2 */
+-        const uint8_t *vp = s->rowbuf + width + dw / 2;
++        const uint8_t *up = s->rowbuf + width * scale;      /* chroma <= width/2 */
++        const uint8_t *vp = s->rowbuf + width * scale + dw * scale / 2;
+         uint16_t *dst = fb + (y0 + row) * width + x0;
+-        int cw = dw / 2;
++        int sw = dw * scale, cw = sw / 2, sr = row * scale;
+ 
+         address_space_read(&address_space_memory,
+-                           ysrc + (hwaddr)row * dw, MEMTXATTRS_UNSPECIFIED,
+-                           s->rowbuf, dw);
++                           ysrc + (hwaddr)sr * sw, MEMTXATTRS_UNSPECIFIED,
++                           s->rowbuf, sw);
+         address_space_read(&address_space_memory,
+-                           usrc + (hwaddr)(row / 2) * cw,
+-                           MEMTXATTRS_UNSPECIFIED, s->rowbuf + width, cw);
++                           usrc + (hwaddr)(sr / 2) * cw,
++                           MEMTXATTRS_UNSPECIFIED, s->rowbuf + width * scale, cw);
+         address_space_read(&address_space_memory,
+-                           vsrc + (hwaddr)(row / 2) * cw,
++                           vsrc + (hwaddr)(sr / 2) * cw,
+                            MEMTXATTRS_UNSPECIFIED,
+-                           s->rowbuf + width + cw, cw);
++                           s->rowbuf + width * scale + cw, cw);
+         for (int i = 0; i < dw; i++) {
+-            int c = (int)yp[i] - 16;
+-            int d = (int)up[i / 2] - 128;
+-            int e = (int)vp[i / 2] - 128;
++            int si = i * scale;
++            int c = (int)yp[si] - 16;
++            int d = (int)up[si / 2] - 128;
++            int e = (int)vp[si / 2] - 128;
+             int r = (298 * c + 409 * e + 128) >> 8;
+             int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+             int b = (298 * c + 516 * d + 128) >> 8;
+diff --git a/hw/arm/ipod_classic/ipod_classic_eic.c b/hw/arm/ipod_classic/ipod_classic_eic.c
+new file mode 100644
+index 0000000..0f67128
+--- /dev/null
++++ b/hw/arm/ipod_classic/ipod_classic_eic.c
+@@ -0,0 +1,187 @@
++/* See ipod_classic_eic.h. */
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "migration/vmstate.h"
++#include "hw/core/cpu.h"
++#include "hw/arm/ipod_classic/ipod_classic_eic.h"
++
++#define EIC_LEVEL  0x80
++#define EIC_STAT   0xa0
++#define EIC_EN     0xc0
++#define EIC_TYPE   0xe0
++
++#define FMARK_GROUP 5
++#define FMARK_BIT   (1u << 15)
++
++static void eic_update(IPodClassicEICState *s)
++{
++    for (int g = 0; g < EIC_NGROUPS; g++) {
++        qemu_set_irq(s->irq[g], (s->stat[g] & s->reg[(EIC_EN >> 2) + g]) != 0);
++    }
++}
++
++static int fmark_hz(void)
++{
++    static int hz = -1;
++    if (hz < 0) {
++        const char *e = getenv("EIC_FMARK");
++        const char *r = getenv("EIC_FMARK_HZ");
++        hz = (e && *e == '0') ? 0 : ((r && *r) ? atoi(r) : 60);
++        if (hz) {
++            fprintf(stderr, "EIC: LCD frame marker on GPIO 55 at %d Hz\n", hz);
++        }
++    }
++    return hz;
++}
++
++extern int ipod_classic_panel_fmark;      /* ipod_classic_lcd.c: R090h FMKM, -1 unwritten */
++
++/* EIC_FMARK=panel: pulse only while the panel's frame marker output is on (R090h FMKM) */
++static bool panel_gated(void)
++{
++    static int gated = -1;
++    if (gated < 0) {
++        const char *e = getenv("EIC_FMARK");
++        gated = e && !strcmp(e, "panel");
++    }
++    return gated && ipod_classic_panel_fmark != 1;
++}
++
++static void eic_fmark(void *opaque)
++{
++    IPodClassicEICState *s = opaque;
++    int hz = fmark_hz();
++
++    /* the panel pulses whether or not anyone listens; the status latches only when enabled */
++    if ((s->reg[(EIC_EN >> 2) + FMARK_GROUP] & FMARK_BIT) && !panel_gated()) {
++        s->stat[FMARK_GROUP] |= FMARK_BIT;
++        s->pulses++;
++        if (s->pulses <= 3 || s->pulses % 3600 == 0) {
++            fprintf(stderr, "EIC: frame marker #%" PRIu64 "\n", s->pulses);
++        }
++        eic_update(s);
++    }
++    timer_mod(s->fmark, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000000LL / hz);
++}
++
++/* EICTRACE=1: every access to the frame marker's group, with the guest PC */
++static bool eic_trace(hwaddr offset)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("EICTRACE");
++        on = e && *e && *e != '0';
++    }
++    return on && (offset & 0x1f) == 4 * FMARK_GROUP && offset >= EIC_LEVEL;
++}
++
++static uint32_t eic_pc(void)
++{
++    CPUState *cs = current_cpu;
++    return cs ? (uint32_t)CPU_GET_CLASS(cs)->get_pc(cs) : 0;
++}
++
++static uint64_t eic_read(void *opaque, hwaddr offset, unsigned size)
++{
++    IPodClassicEICState *s = opaque;
++    uint32_t v;
++
++    if (offset >= EIC_STAT && offset < EIC_STAT + 4 * EIC_NGROUPS) {
++        v = s->stat[(offset - EIC_STAT) >> 2];
++    } else {
++        v = offset < EIC_MEM_SIZE ? s->reg[offset >> 2] : 0;
++    }
++    if (eic_trace(offset)) {
++        fprintf(stderr, "EICTRACE rd +0x%03x -> 0x%08x pc~0x%08x\n", (unsigned)offset, v, eic_pc());
++    }
++    return v;
++}
++
++static void eic_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
++{
++    IPodClassicEICState *s = opaque;
++
++    if (offset >= EIC_MEM_SIZE) {
++        return;
++    }
++    if (eic_trace(offset)) {
++        fprintf(stderr, "EICTRACE wr +0x%03x = 0x%08x pc~0x%08x\n", (unsigned)offset, (uint32_t)value, eic_pc());
++    }
++    if (offset >= EIC_STAT && offset < EIC_STAT + 4 * EIC_NGROUPS) {
++        /* write 1 to clear: the retailOS's EINT handler (IRAM 0x22002f94) writes the bit back */
++        s->stat[(offset - EIC_STAT) >> 2] &= ~(uint32_t)value;
++    } else {
++        s->reg[offset >> 2] = (uint32_t)value;
++    }
++    eic_update(s);
++}
++
++static const MemoryRegionOps eic_ops = {
++    .read = eic_read,
++    .write = eic_write,
++    .endianness = DEVICE_NATIVE_ENDIAN,
++    .valid.min_access_size = 1,
++    .valid.max_access_size = 4,
++};
++
++static void eic_reset(DeviceState *dev)
++{
++    IPodClassicEICState *s = IPOD_CLASSIC_EIC(dev);
++
++    memset(s->reg, 0, sizeof(s->reg));
++    memset(s->stat, 0, sizeof(s->stat));
++    s->pulses = 0;
++    if (fmark_hz()) {
++        timer_mod(s->fmark, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000000LL / fmark_hz());
++    }
++    eic_update(s);
++}
++
++static void eic_init(Object *obj)
++{
++    IPodClassicEICState *s = IPOD_CLASSIC_EIC(obj);
++
++    memory_region_init_io(&s->iomem, obj, &eic_ops, s, TYPE_IPOD_CLASSIC_EIC, EIC_MEM_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++    for (int g = 0; g < EIC_NGROUPS; g++) {
++        sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq[g]);
++    }
++    s->fmark = timer_new_ns(QEMU_CLOCK_VIRTUAL, eic_fmark, s);
++}
++
++static const VMStateDescription vmstate_eic = {
++    .name = TYPE_IPOD_CLASSIC_EIC,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(reg, IPodClassicEICState, EIC_NREG),
++        VMSTATE_UINT32_ARRAY(stat, IPodClassicEICState, EIC_NGROUPS),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void eic_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->desc = "S5L8702 external interrupt controller";
++    dc->reset = eic_reset;
++    dc->vmsd = &vmstate_eic;
++    dc->user_creatable = false;
++}
++
++static const TypeInfo eic_info = {
++    .name = TYPE_IPOD_CLASSIC_EIC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(IPodClassicEICState),
++    .instance_init = eic_init,
++    .class_init = eic_class_init,
++};
++
++static void eic_register_types(void)
++{
++    type_register_static(&eic_info);
++}
++
++type_init(eic_register_types)
+diff --git a/hw/arm/ipod_classic/ipod_classic_lcd.c b/hw/arm/ipod_classic/ipod_classic_lcd.c
+index 6f959d3..0638d3c 100644
+--- a/hw/arm/ipod_classic/ipod_classic_lcd.c
++++ b/hw/arm/ipod_classic/ipod_classic_lcd.c
+@@ -430,11 +430,31 @@ static uint64_t ipod_classic_lcd_read(void *opaque, hwaddr offset,
+     }
+ }
+ 
++/*
++ * The 16-bit panels' (types 2 and 3, ILI9326) Frame Marker Position register R090h:
++ * bit 15 (FMKM) turns the FMARK output on. Tracked so the EIC model can pulse the
++ * line only when the panel would (EIC_FMARK=panel). -1 until the register is written.
++ */
++int ipod_classic_panel_fmark = -1;
++static uint32_t panel_last_index16;
++
+ static void ipod_classic_lcd_write(void *opaque, hwaddr offset, uint64_t value,
+                                    unsigned size)
+ {
+     IPodClassicLCDState *s = opaque;
+ 
++    if (offset == S5L8702_LCD_WCMD) {
++        panel_last_index16 = value & 0xffff;
++    } else if (offset >= S5L8702_LCD_WDATA && offset <= S5L8702_LCD_WDATA_LAST &&
++               panel_last_index16 == 0x090) {
++        int on = (value >> 15) & 1;
++        if (on != ipod_classic_panel_fmark) {
++            fprintf(stderr, "LCD: panel R090h = 0x%04x, frame marker %s\n",
++                    (unsigned)(value & 0xffff), on ? "on" : "off");
++        }
++        ipod_classic_panel_fmark = on;
++    }
++
+     if (lcd_trace_on()) {
+         if (offset >= S5L8702_LCD_WDATA && offset <= S5L8702_LCD_WDATA_LAST) {
+             /*
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index cd9afad..ed69725 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -66,7 +66,7 @@ arm_ss.add(when: 'CONFIG_FSL_IMX6UL', if_true: files('fsl-imx6ul.c', 'mcimx6ul-e
+ arm_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_soc.c'))
+ arm_ss.add(when: 'CONFIG_XEN', if_true: files('xen_arm.c'))
+ arm_ss.add(when: 'CONFIG_IPOD_TOUCH_2G', if_true: files('ipod_touch_2g.c', 'ipod_touch_clock.c', 'ipod_touch_chipid.c', 'ipod_touch_gpio.c', 'ipod_touch_sysic.c', 'ipod_touch_timer.c', 'ipod_touch_usb_otg.c', 'ipod_touch_usb_phys.c', 'ipod_touch_spi.c', 'ipod_touch_nor_spi.c', 'ipod_touch_sha1.c', 'ipod_touch_aes.c', 'ipod_touch_pke.c', 'ipod_touch_pcf50633_pmu.c', 'ipod_touch_unknown1.c', 'ipod_touch_lcd.c', 'ipod_touch_mipi_dsi.c', 'ipod_touch_fmss.c', 'ipod_touch_mbx.c', 'ipod_touch_cd3272_mikey.c', 'ipod_touch_lis302dl.c', 'ipod_touch_multitouch.c', 'ipod_touch_scaler_csc.c', 'ipod_touch_sdio.c', 'ipod_touch_tvout.c', 'ipod_touch_isl29003dl.c'))
+-arm_ss.add(when: 'CONFIG_IPOD_CLASSIC_6G', if_true: files('ipod_classic/ipod_classic.c', 'ipod_classic/ipod_classic_timer.c', 'ipod_classic/ipod_classic_clk.c', 'ipod_classic/ipod_classic_i2c.c', 'ipod_classic/ipod_classic_pmu.c', 'ipod_classic/ipod_classic_ata.c', 'ipod_classic/ipod_classic_lcd.c', 'ipod_classic/ipod_classic_gpio.c', 'ipod_classic/ipod_classic_disp.c', 'ipod_classic/ipod_classic_wheel.c', 'ipod_classic/ipod_classic_i2s.c', 'ipod_classic/ipod_classic_cs42l55.c', 'ipod_classic/ipod_classic_sm1.c', 'ipod_classic/ipod_classic_sm1_dec.c', 'ipod_classic/ipod_classic_vdec.c', 'ipod_classic/ipod_classic_vdec_dec.c', 'ipod_classic/ipod_classic_sdo.c', 'ipod_classic/ipod_classic_edgeic.c'))
++arm_ss.add(when: 'CONFIG_IPOD_CLASSIC_6G', if_true: files('ipod_classic/ipod_classic.c', 'ipod_classic/ipod_classic_timer.c', 'ipod_classic/ipod_classic_clk.c', 'ipod_classic/ipod_classic_i2c.c', 'ipod_classic/ipod_classic_pmu.c', 'ipod_classic/ipod_classic_ata.c', 'ipod_classic/ipod_classic_lcd.c', 'ipod_classic/ipod_classic_gpio.c', 'ipod_classic/ipod_classic_disp.c', 'ipod_classic/ipod_classic_wheel.c', 'ipod_classic/ipod_classic_i2s.c', 'ipod_classic/ipod_classic_cs42l55.c', 'ipod_classic/ipod_classic_sm1.c', 'ipod_classic/ipod_classic_sm1_dec.c', 'ipod_classic/ipod_classic_vdec.c', 'ipod_classic/ipod_classic_vdec_dec.c', 'ipod_classic/ipod_classic_sdo.c', 'ipod_classic/ipod_classic_edgeic.c', 'ipod_classic/ipod_classic_eic.c'))
+ if sm1_dec_found
+   arm_ss.add(when: 'CONFIG_IPOD_CLASSIC_6G', if_true: sm1_dec)
+ endif
+diff --git a/include/hw/arm/ipod_classic/ipod_classic_eic.h b/include/hw/arm/ipod_classic/ipod_classic_eic.h
+new file mode 100644
+index 0000000..fbd6418
+--- /dev/null
++++ b/include/hw/arm/ipod_classic/ipod_classic_eic.h
+@@ -0,0 +1,41 @@
++/*
++ * S5L8702 external (GPIO) interrupt controller, 0x39a00000.
++ *
++ * Seven groups of 32 sources; GPIO pins map to groups 6..3 in reverse order and
++ * group g drives VIC line EINT(6 - g) (Rockbox s5l87xx.h). Per group, at
++ * +0x80/+0xa0/+0xc0/+0xe0 + 4*g: level, status (write 1 to clear), enable, type.
++ *
++ * The only source the machine drives is the LCD panel's frame marker (FMARK, the
++ * tearing-effect output) on GPIO 55: group 5, bit 15, VIC line 1. The retailOS's
++ * video presenter registers for it (0x081447fc -> 0x080404d0(55, ...)) and draws
++ * one frame per pulse. EIC_FMARK=0 turns the pulses off; EIC_FMARK_HZ sets the
++ * rate (60 by default). Everything else is a register latch.
++ */
++#ifndef HW_ARM_IPOD_CLASSIC_EIC_H
++#define HW_ARM_IPOD_CLASSIC_EIC_H
++
++#include "qemu/osdep.h"
++#include "hw/sysbus.h"
++#include "hw/irq.h"
++#include "qemu/timer.h"
++#include "qom/object.h"
++
++#define TYPE_IPOD_CLASSIC_EIC "s5l8702.eic"
++OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicEICState, IPOD_CLASSIC_EIC)
++
++#define EIC_MEM_SIZE  0x1000
++#define EIC_NREG      (EIC_MEM_SIZE / 4)
++#define EIC_NGROUPS   7
++
++struct IPodClassicEICState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq irq[EIC_NGROUPS];      /* group g -> VIC EINT(6 - g) */
++    uint32_t reg[EIC_NREG];
++    uint32_t stat[EIC_NGROUPS];
++    QEMUTimer *fmark;
++    uint64_t pulses;
++};
++
++#endif
+diff --git a/meson.build b/meson.build
+index e02d30a..cd563ad 100644
+--- a/meson.build
++++ b/meson.build
+@@ -816,10 +816,11 @@ if 'ust' in get_option('trace_backends')
+   lttng = dependency('lttng-ust', required: true, version: '>= 2.1',
+                      method: 'pkg-config')
+ endif
+-sm1_dec = declare_dependency(dependencies: [
+-  dependency('libavcodec', required: get_option('sm1_decoder')),
+-  dependency('libavutil', required: get_option('sm1_decoder'))])
+-sm1_dec_found = sm1_dec.found()
++sm1_avcodec = dependency('libavcodec', required: get_option('sm1_decoder'))
++sm1_avutil = dependency('libavutil', required: get_option('sm1_decoder'))
++sm1_dec = declare_dependency(dependencies: [sm1_avcodec, sm1_avutil])
++# a declare_dependency() is always found(): test the libraries themselves
++sm1_dec_found = sm1_avcodec.found() and sm1_avutil.found()
+ pixman = not_found
+ if not get_option('pixman').auto() or have_system or have_tools
+   pixman = dependency('pixman-1', required: get_option('pixman'), version:'>=0.21.8',

@@ -34,6 +34,8 @@ OS's startup copy is extended to copy it, and the heap base moves past it.
 | `bootloader/` | Built bootloaders (`boot-v6/` current), the stock source for reference. |
 | `osos_boot/` | Rockbox plugins that booted the image before the NOR bootloader existed. |
 | `osre/` | Reverse-engineering helper (`osre.py`) and its cached OS dumps. |
+| `tools/qemu/` | Emulator patches, disk tools and scripts (`README.md`). `tools/osmap.py` makes `build/os204.map` (OS symbol names). |
+| `tools/video/` | `ipodenc.sh`: episodes encoded for the iPod. |
 
 ## 3. Boot and library load (`runtime/libload.c`)
 
@@ -101,9 +103,31 @@ Kept from an existing entry: `0x10(4) 0x1f(1) 0x40(0x1c) 0x68(0x10) 0x79(1) 0x7c
 version (4), u16 flags (title from file name / no album / no artist), u32 sync time, u32 0. An
 entry without the current marker is rebuilt once, keeping its history.
 
+**The Music app** rewrites the database whenever the iPod connects to a Mac (and lists the library
+from it). It keeps every entry's fields and string records but zeroes the marker, sets `+0x1e0` to
+`0x81`, writes rates over 65535 Hz as `0xffffffff` and moves the comment record after the file
+type. Each successful write therefore leaves `FLAC/libsync.state` (`'FLSY'`, u16 version, u16 0);
+while it names the current version, an unchanged FLAC entry with an all-zero marker is kept as the
+Music app wrote it (play counts it merged in included) and stamped at the next write. Without the
+state file such entries are rebuilt as before. Test 19 in `test_incr.py` covers it.
+
+### TV episodes
+`.m4v`/`.mp4` files under `/TV Shows/<show>/[Season N/]` (optional folder; without it the episodes
+are dropped) become entries of file type `'M4V '` (`0x4d345620`). Ours = a FLAC, or an M4V whose
+location is outside `:iPod_Control:` (iTunes-synced videos are left alone). The season is the
+folder's number, else the N of an `SnnEnn` in the name, else 1; the episode is the `Enn`, else the
+number the name starts with, else the file's place in its folder in name order; the title is what
+follows (past `" - "`, `". "`), else "Episode N". Length from `mvhd`, audio rate from the `mp4a`
+entry. Records as iTunes writes an episode: title (1), the show as artist (4), album
+`"<show>, Season N"` (3), show (19), `SnnEnn` (20), "MPEG-4 video file" (6), location (2).
+Fields: `+0x2c` and `+0xd8` episode, `+0xd4` season, `+0xd0` media type `0x40` (TV show), `+0xa6`
+remember playback position (an episode without it is rebuilt once), `+0xb1` video, `+0xb2` 2 =
+unplayed. Tests 20 to 22 in
+`test_incr.py`. Encoding: `tools/video/ipodenc.sh` (H.264 Baseline 3.0, 640x480 at most, AAC).
+
 ### Safety
 - `ls_verify` re-parses every new image before it replaces the old one: lengths, section chain,
-  unique album/track ids and dbids, ascending track ids, one title and one location per FLAC entry,
+  unique album/track ids and dbids, ascending track ids, one title and one location per entry of ours,
   album ids present and all used, the 10 sort indexes as permutations, contiguous letter tables,
   master items equal to the track list, items pointing at real tracks, unique item ids, the
   expected number of our playlists. A rejected image is saved as `FLAC\iTunesDB.rejected`.
@@ -157,6 +181,23 @@ Trace words `TR(n)` (see the legends in `art.c` and `flacblob.c`) are debug coun
 `FLAC\flaclogXY.bin` only when `FLAC\debug.txt` exists. Known: the `art.c` legend is stale for
 TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read ticks).
 
+### Video and the panel frame marker (`runtime/panel.c`)
+Apple's video path needs no patch: the S5L8702's own decoder (`0x39800000`) decodes H.264 into a
+5 MB frame pool, and the display task `0x081ce0ac` presents one frame (`0x080eaad8`) each time the
+LCD's frame marker (FMARK, GPIO 55, EIC group 5 bit 15) signals its semaphore; the LCD driver
+registers that handler in `0x081447fc` (driver, semaphore) → `0x080404d0(55, ...)`. Without pulses
+the player fills its pool and sits on a black screen at 0:00; menus don't need the line.
+
+Apple's bootloader turns the line on. Ours uses Rockbox's panel setup, which on panel types 2/3
+(ILI9326, PDAT6 bits 4-5; this iPod is type 2) writes R090h = `0x0021`: FMKM (bit 15, output
+enable) off. An entry hook on `0x081447fc` (`hk_fmark_reg`) writes R090h = `0x8021` whenever a
+semaphore is registered (first screen, each video start, after a resume): wait for the controller
+(`0x38300000`) to idle, command mode `0x80000da8`, index `0x090`, data, index `0x202` again (GRAM
+write, so a preempted driver still lands pixels), previous mode back. Interrupts are off for those
+microseconds; every wait gives up after 2 ms and leaves the register as it was (logged once).
+Types 0/1 get "tearing effect line on" from Rockbox's setup already. The emulator models the
+line (`tools/qemu/README.md`, `EIC_FMARK=panel`).
+
 ## 7. Paths (`runtime/path.c`, `runtime/osfile.c`)
 
 - A track record keeps 36 bytes of location at `+0xc0`. Longer locations are copied to the heap:
@@ -192,6 +233,13 @@ TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read
   reflection), `_Critical` (low battery) as the outline with a red sliver, and the bolt and plug
   (`_ToggleCharging/_ToggleCharged`, alpha masks the OS tints black) as white palette images. Its
   glossy top bar is `NowPlaying_StatusBar` (`0x0dad082e`), flattened by `modern_bars`.
+- Games (not built): the catalog lists the folder named by the string at `0x089a8d1e` (stock
+  `iPod_Control/games_RO/`), and every game file is reached through
+  `0x08096ea4(out, kind, id, builtin, sub)`, which builds `iPod_Control/<folder>/<id>/<sub>` (kinds 0
+  and 4 `games_RO`, 1 `gamedata_RW`, 2 `gamestats_WO`, 3 `gamedata_ShareRW`; kind 0 with `builtin`
+  set is `Resources/Games`). R62 rewrote both to read games from `/Games`; with 49 games there, the
+  iPod's disk mode stopped answering the Mac (the cause is not found), so it was taken out. Emulator
+  test disks: `tools/qemu/fatadd.py` copies a folder into the FAT32 image.
 - Cover Flow: its layout is a table of constant value nodes (vtable `0x08986998`, value at `+4`)
   built at start-up around `0x082a1300`: centre cover at (0, -9, 72.5) turned 180 (flat), first
   side cover at (55, -9, 40) turned 270 (`0x08a79840`, `0x08a79930`), side covers 15 apart (code

@@ -44,3 +44,7 @@ runtime/prof_hooks.json
 sficons/
 runtime/sficons_data.h
 runtime/sfdigits_data.h
+
+# games and encoded TV episodes (media, never committed)
+games/
+tv/
