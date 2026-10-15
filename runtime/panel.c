@@ -1,23 +1,5 @@
-/* LCD panel frame marker.
- *
- * Apple's video player paces frames on the panel's frame marker (FMARK, the tearing-effect line):
- * the LCD driver registers GPIO 55 (0x081447fc -> 0x080404d0(55, ...)) and the display task
- * presents one frame per pulse. With no pulses the player decodes until its frame pool is full
- * and stays on a black screen at 0:00; the menus do not need the line.
- *
- * Apple's bootloader turns the line on when it sets up the panel. Ours uses Rockbox's panel
- * setup, which on panel types 2 and 3 (ILI9326, 16-bit registers) writes the Frame Marker
- * Position register R090h as 0x0021: position 33 with FMKM, the output enable (bit 15), off.
- * This writes it again with FMKM set and an interval of every frame (FMI 000). Types 0 and 1
- * (8-bit command set) get "Tearing Effect Line On" from that setup already.
- *
- * The write runs whenever something registers for the frame marker (entry hook on 0x081447fc,
- * the LCD driver's method that takes the display semaphore): at the first screen and each time
- * a video starts, so a panel set up again after sleep or a resume gets it back before it is used.
- * It uses the controller as Rockbox does (lcd-s5l8702.c): wait until idle, command mode, index
- * then data, back to the previous mode. Interrupts are off for those microseconds; the GRAM write
- * index (0x202) is sent again afterwards, so a driver that had already selected it before being
- * preempted still writes pixels to the screen. Every wait gives up after 2 ms. */
+/* Panel frame marker (FMARK, GPIO 55): video presents a frame per pulse. Rockbox's type 2/3 panel
+ * setup leaves it off (R090h = 0x0021); set FMKM whenever the LCD driver registers for it. */
 #include "e.h"
 
 #define LCD_CON       (*(volatile uint32_t *)0x38300000)

@@ -27,14 +27,8 @@
 /* Entry version marker at LS_MARK, in the zero tail of the 0x270-byte track header (0x210..0x26f
    is zero in entries written by the OS or iTunes): 'FLSY', u16 version, u16 flags, u32 sync
    generation, u32 reserved. Entries without the current marker are rebuilt once, keeping
-   id, dbid, dates and play counts.
-   The Music app rewrites the database whenever the iPod connects to a Mac. It keeps every entry's
-   fields and string records (it moves the comment record after the file type, sets 0x1e0 to 0x81
-   and writes rates over 65535 Hz as 0xffffffff) but zeroes the marker. So each successful write
-   also leaves LS_STATE (FLAC/libsync.state: 'FLSY', u16 version, u16 0). While it holds the
-   current version, an unchanged FLAC entry whose marker is all zero is taken as one of ours
-   rewritten by the Music app: it is kept as it is, play counts the Music app merged in
-   included, and stamped when the database is next written. */
+   id, dbid, dates and play counts. The Music app zeroes markers; while FLAC/libsync.state
+   names this version, an unchanged entry with a blank marker is kept and restamped. */
 #define LS_MARK       0x258
 #define LS_VER        4
 #define LS_F_FNTITLE  1             /* title taken from the file name */
@@ -479,8 +473,7 @@ static int mhod_find(const uint8_t *m, uint32_t ml, uint32_t type, const uint8_t
     *s = 0; *n = 0;
     return 0;
 }
-/* Entries this library owns: every FLAC, and the videos it adds from /TV Shows, told apart from
-   iTunes' own by a location outside iPod_Control (the Music app keeps locations, not markers). */
+/* ours: every FLAC, and videos located outside iPod_Control */
 static int loc_outside(const uint8_t *s, uint32_t n)
 {
     static const char ctl[] = ":ipod_control:";
@@ -934,8 +927,7 @@ static int album_for(const uint8_t *al, int aln, const uint8_t *ar, int arn, uin
 
 /* ---------------- TV episodes ---------------- */
 static uint32_t b32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-/* Length and audio rate from the MP4 boxes: mvhd, and the mp4a entry of the sound track's stsd.
-   Inside moov the containers on the way are stepped into, everything else is skipped. */
+/* length (mvhd) and audio rate (stsd mp4a) */
 static int read_mp4(const char *path, uint32_t *ms, uint32_t *sr)
 {
     uint8_t b[64];
@@ -977,10 +969,8 @@ static uint32_t num_at(const char *s, int n, int *i)
     while (*i < n && is_num(s[*i]) && v < 100000) v = v * 10 + (uint32_t)(s[(*i)++] - '0');
     return v;
 }
-/* /TV Shows/<show>/[Season N/]<name>.m4v. The season is the folder's number, or N of an SnnEnn
-   in the name; the episode is the Enn, or the number the name starts with (make_video falls back
-   to the file's place in its folder). What follows (past " - ", ". " and the like) is the title,
-   "Episode N" when nothing does. */
+/* /TV Shows/<show>/[Season N/]<name>: season and episode from the folder, SnnEnn or a leading
+   number; the rest of the name is the title */
 struct tvname { const char *show; int shown; uint32_t season, episode; const char *title; int titlen; };
 static void tv_name(const char *path, struct tvname *v)
 {
@@ -1092,8 +1082,7 @@ static int make_video(const struct fent *f, uint32_t id, const struct trk *old)
         LS_MEMCPY(h + LS_MARK, "FLSY", 4);
         p16(h + LS_MARK + 4, LS_VER); p32(h + LS_MARK + 8, OP->now);
     }
-    /* title, artist and album as iTunes writes an episode (the show, "show, Season N"), then the
-       show and episode id records the TV Shows menus list by */
+    /* as iTunes writes an episode; 19 and 20 feed the TV Shows menus */
     q = h + hl;
     q = put_mhod(q, 1, tt, ttn, 0);
     q = put_mhod(q, 4, (const uint8_t *)v.show, v.shown, 0);

@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-"""osmap.py STOCK.dec INVENTORY.md OUT.map: a symbol map of Apple's OS 2.0.4 from a string inventory.
-
-The inventory (giek2000/ipod-classic-firmware-research, specs/iPod_Classic_7G_35_2_0_4.md) lists
-strings by file offset in the decrypted image. Each becomes a runtime address (the image body is
-loaded so that file offset 0x800 sits at 0x07ff5128). For every string the map adds:
-  - the code that loads its address from a literal pool (the enclosing function's entry);
-  - for class names, the data words that point at the name (type info) and the vtables after them.
-Lines: ADDRESS KIND NAME [-> details]. Sorted by address."""
+"""osmap.py STOCK.dec INVENTORY.md OUT.map: OS 2.0.4 symbol map from giek2000's string inventory
+(functions loading each string, class type info and vtables). Lines: ADDRESS KIND NAME [-> details]."""
 import re, struct, sys
 
 LOAD = 0x07ff5128 - 0x800          # runtime address = file offset + LOAD

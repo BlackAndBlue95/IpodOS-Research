@@ -1,9 +1,6 @@
 #!/bin/sh
-# ipodenc.sh IN OUT.m4v [START LENGTH]: encodes a video for the iPod Classic with x264 (build/tools/ffmpeg).
-# Apple's iPod H.264 profile (support.apple.com 112478, TN2188): Baseline level 3.0 at most 640x480,
-# 30 fps, CAVLC, no B-frames, one reference frame, at most 1.5 Mbit/s; AAC-LC stereo 128 kbit/s
-# at 44.1 kHz. The frame rate is made constant (29.97) and the video padded to 640x480. Closed
-# captions carried in the source are not copied into the stream (no caption SEI on every frame).
+# ipodenc.sh IN OUT.m4v [START LENGTH]: Apple's iPod H.264 profile (Baseline 3.0, 640x480, 1.5 Mbit/s,
+# AAC 128k 44.1 kHz), constant 29.97 fps, no caption SEI
 set -e
 FF=$(cd "$(dirname "$0")/../.." && pwd)/build/tools/ffmpeg
 IN=${1:?input}; OUT=${2:?output}
