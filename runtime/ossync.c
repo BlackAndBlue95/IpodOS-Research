@@ -5,9 +5,12 @@
 #include "e.h"
 
 /* ---- freestanding bits libsync needs ---- */
+typedef uint32_t __attribute__((may_alias)) u32a;
 int e_memcmp(const void *a, const void *b, size_t n)
 {
     const uint8_t *x = a, *y = b;
+    if (!(((uintptr_t)x | (uintptr_t)y) & 3))
+        while (n >= 4 && *(const u32a *)x == *(const u32a *)y) { x += 4; y += 4; n -= 4; }
     while (n--) { if (*x != *y) return *x - *y; x++; y++; }
     return 0;
 }

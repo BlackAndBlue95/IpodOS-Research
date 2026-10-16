@@ -48,6 +48,10 @@ for _t, _p in plan['types'].items():
     for _pos in [_p['count'] + _k for _k in range(len(_p['new']))] + [_n['pos'] for _n in _p['replaced']]:
         _o = sym[_p['tab']] - E + 12 * _pos + 4
         e_expect[_o:_o + 8] = dram[E - 0x08000000 + _o:E - 0x08000000 + _o + 8]
+fast_libc = 'kfix_libc' in sym and dw(0x0802cedc) == sym['kfix_libc']
+if fast_libc:   # --fast-libc: kfix_libc holds Apple's IRAM libc routines
+    _o = sym['kfix_libc'] - E
+    e_expect[_o:_o + 0x2f8] = iram[0x20:0x318]
 check(bytes(dram[E - 0x08000000:E - 0x08000000 + len(e)]) == bytes(e_expect), 'region E at %#x after the copy and BSS zeroing (index entries excepted)' % E)
 check(rw_exec + rw_len == E + len(e), 'copy ends exactly at the end of E')
 check(zi_base + zi_len <= E, 'BSS (%#x..%#x) stays below E' % (zi_base, zi_base + zi_len))
@@ -110,6 +114,8 @@ if full:
     br(0x08113470, 'hk_render')
     br(0x081a8444, 'hk_marq')
     br(0x081a7e70, 'e_marq_ink')
+    if dw(0x08281824) == 0xeaf6adab and dw(0x0809f4d0) == 0xe92d41f0: check(True, 'screen copy-back stock (no --fb-damage)')
+    else: br(0x08281824, 'e_fbcopy'); br(0x0809f4d0, 'hk_fbdmg')
     # the grey literals: all point into E except the ones kept on the OS globals
     import re as _re
     _mk = open(__file__.replace('checkpatch.py', 'mkpatch18.py')).read()
@@ -149,5 +155,30 @@ if full:
     check(names_ok, 'name table copy matches the original %d entries' % nm['count'])
 gov = iw(0x22002a4c)
 check(gov in (0xe3a00000, 0xe3a00001), 'governor word %08x (%s)' % (gov, 'L1 floor with the backlight on' if gov == 0xe3a00001 else 'stock, pins L0'))
+md = dw(0x0802cf1c)
+check(md in (0x22001f38, sym.get('e_mdelay')), 'mdelay veneer -> %s' % ('e_mdelay (sleep delays)' if md != 0x22001f38 else 'the timer spin (stock)'))
+mm = iw(0x2200369c)
+check(mm in (0x0802cdc8, sym.get('e_mmu_iram')), 'MMU setup helper -> %s' % ('e_mmu_iram (IRAM cached)' if mm != 0x0802cdc8 else 'stock'))
+i2c = (dw(0x08360ce4), dw(0x08360ab0))
+check(i2c in ((0x1bf330b1, 0x1bf3313e), (0xe1a00000, 0xe1a00000)), 'I2C bus gap: %s' % ('spin' if i2c[0] == 0xe1a00000 else 'stock 1 ms sleep'))
+LIBC_VENEERS = ((0x0802cedc, 0x020), (0x0802cee4, 0x27c), (0x0802ceec, 0x2d8), (0x0802cef4, 0x2d4), (0x0802cefc, 0x020),
+                (0x0802cf04, 0x0d4), (0x0802cf24, 0x188), (0x0802cf2c, 0x0d4), (0x0802d09c, 0x1f4))
+lib_to = [sym['kfix_libc'] + o - 0x20 if fast_libc else 0x22000000 + o for _l, o in LIBC_VENEERS]
+check(all(dw(l) == t for (l, _o), t in zip(LIBC_VENEERS, lib_to)), '%d libc veneers -> %s' % (len(LIBC_VENEERS), 'the cached copy in E (fast libc)' if fast_libc else 'IRAM (stock)'))
+dc = [dw(a) for a in (0x08039d38, 0x08039d70, 0x0804e918)]
+if dc == [0xe92d4070] * 3: check(True, 'D-cache range helpers stock')
+else:
+    for at, name in ((0x08039d38, 'hk_dc_cinv'), (0x08039d70, 'hk_dc_clean'), (0x0804e918, 'hk_dc_inv')): br(at, name)
+def opt(label, sites):
+    """optional hooks: all stock (first word given) or all to region E"""
+    if all(dw(at) == w for at, w, _n in sites): check(True, '%s stock' % label)
+    else:
+        for at, _w, name in sites: br(at, name)
+opt('heap cache', [(0x080e07a4, 0xe92d4070, 'hk_hcmalloc'), (0x080dca98, 0xe92d4070, 'hk_hcfree'),
+    (0x081927c0, 0xebfffe6a, 'hc_alloc'), (0x08191f48, 0xeb000088, 'hc_alloc'), (0x08192434, 0xebffff4d, 'hc_alloc'), (0x081927ec, 0xebfffe5f, 'hc_alloc')])
+opt('fast prims', [(0x08299e38, 0xe92d41f0, 'hk_aget'), (0x08299d48, 0xe92d41f0, 'hk_acopy'), (0x08299fcc, 0xe92d4070, 'hk_bsnext'),
+                   (0x0829bcc0, 0xebfff8d2, 'hk_bsscan7'), (0x0828f9cc, 0xeb002993, 'hk_bsscansl')])
+ras = (dw(0x0890d914), dw(0x0890d950))
+check(ras in ((0x0890d8c4,) * 2, (sym.get('ft_grays_raster'),) * 2), 'smooth renderers raster_class -> %s' % ('FreeType 2.14 ftgrays' if ras[0] != 0x0890d8c4 else 'stock'))
 print('ALL OK' if not fails else '%d FAILED' % fails)
 sys.exit(1 if fails else 0)

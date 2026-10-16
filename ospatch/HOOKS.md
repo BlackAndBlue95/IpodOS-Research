@@ -102,9 +102,34 @@ role 0xc}; role 0xc is asked for as a BMap and gets Settings_MainMenu_CheckmarkB
 |---|---|---|---|
 | IRAM 0x22002a4c | 0xe3a00000 mov r0,#0 | 0xe3a00001 mov r0,#1 | PowerMgmt: a lit screen floors the level at L1 (108 MHz, 1100 mV) instead of pinning L0 (216 MHz, 1200 mV); load still raises it to L0 |
 
+## Kernel prototypes (optional, emulator-verified only; `docs/KERNEL-SURVEY.md`)
+| Flag | Addr | Stock | Patched | Purpose |
+|---|---|---|---|---|
+| `--sleep-delays` | 0x0802cf1c (mdelay veneer literal) | 0x22001f38 | `e_mdelay` | from the audited call sites 0x0809f40c (codec power-up 75 ms, it stalled the UI), 0x0809f4b8 (power-down 150 ms) and 0x0806dd6c (10 ms), a task with interrupts on sleeps ms + 1 instead of spinning; other callers spin |
+| `--iram-cache` | IRAM 0x2200369c (veneer literal, only caller 0x220045f8 in the MMU setup) | 0x0802cdc8 | `e_mmu_iram` | IRAM's 1 MB sections at VA 0 and 0x22000000 become a coarse table: pages 0x22000000-0x22007fff write-through cacheable, the rest uncached as before |
+| `--i2c-spin` | 0x08360ce4, 0x08360ab0 | `blne 0x0802cfb0` (sleep 1 tick) | nop | the I2C read/write gap loop spins out its 100 us instead of sleeping a 1 ms tick |
+| `--fast-libc` | literals 0x0802cedc, cee4, ceec, cef4, cefc, cf04, cf24, cf2c, d09c; `kfix_libc` in E | IRAM 0x22000020 + offset | `kfix_libc` + same offset | IRAM 0x22000020-0x22000317 (memcpy/memmove/memset family, position-independent) copied verbatim into E so the 1,670 DRAM callers run it from cache; E's own memcpy/memmove/memset use it |
+| `--fast-dcache` | 0x08039d38, 0x08039d70, 0x0804e918 (entries) | e92d4070 (e3100102 / e1a06001 / e1a06001) | `b hk_dc_cinv` / `hk_dc_clean` / `hk_dc_inv` | D-cache range clean+invalidate / clean / invalidate on the same lines inline; clean variants whole-cache from 32 KB |
+
+## Boot CPU (optional)
+| Flag | Addr | Stock | Patched | Purpose |
+|---|---|---|---|---|
+| `--heap-cache` | 0x080e07a4 os_malloc, 0x080dca98 os_free (entries) | e92d4070 (e1a05000) | `b hk_hcmalloc` / `b hk_hcfree` | tag-2 blocks up to 512 bytes freed into per-size bins (24 each, 96 KB) and handed to the next malloc of that size; a block reused by another task has its charge moved (0x08191e84 under the heap lock) |
+| `--heap-cache` | 0x081927c0, 0x08191f48, 0x08192434, 0x081927ec | `bl 0x08192170` | `bl hc_alloc` | Apple's allocator (malloc, zeroing, no-beep, realloc): on failure with blocks cached, they are freed and it runs again |
+| `--fast-prims` | 0x08299e38 array get, 0x08299d48 array copy (entries) | e92d41f0 (e3710106 / e1a04000) | `b hk_aget` / `b hk_acopy` | arrays of 4-byte elements (size method 0x08299af0, or 0x082901d8 with +0x10 = 4) read directly; others run Apple's code |
+| `--fast-prims` | 0x08299fcc bitset next-set-bit (entry) | e92d4070 (e1a05000) | `b hk_bsnext` | word at a time with clz instead of one call per bit |
+| `--fast-prims` | 0x0829bcc0, 0x0828f9cc | `bl 0x0829a010` / `bl 0x0829a020` | `bl hk_bsscan7` / `bl hk_bsscansl` | the glyph-bitset loops' per-bit test moves the loop index (r5) to the next set bit |
+| `--ft-raster` | 0x0890d914, 0x0890d950 (raster_class of the "smooth" / "smooth-lcd" renderer classes) | 0x0890d8c4 | `ft_grays_raster` | FreeType 2.14.3's ftgrays (runtime/ft) instead of the OS's 2007-era one; cells in the library's render pool from raster_reset, as before |
+
 Region E never writes CLKCON1 or the core voltage; it asks for speed through the OS's hold API
 (0x0802d060 → IRAM 0x2200441c). `osos_boot` v12c hands over Apple's clock gating
 (PWRCON0 0x2007cd45, PWRCON1 0x0003efc9, CLKCON2/3 0x80008000, CLKCON4/5 0x00008000).
+
+## Screen copy-back (optional, `--fb-damage`, runtime/fbcopy.c)
+| Addr | Stock | v18 | Purpose |
+|---|---|---|---|
+| 0x08281824 (end of the screen layer's buffer swap 0x082817ac) | b 0x0802ced8 memcpy(new, old, 307200) | `b e_fbcopy` | copies only the rects drawn into either buffer since the last swap; full copy when tracking (re)starts, the stride is unknown, or a sampled row check finds an unseen write (then off for the session, `fbdmg: off` in the log) |
+| 0x0809f4d0 bitmap damage notifier (entry) | 0xe92d41f0 (0xe1a08001) | `b hk_fbdmg` | fill 0x080699c0 and blit 0x080e6728 call it with the clipped rect before writing; rects on the two screen buffers are kept (4 per buffer, merged) |
 
 ## Path encoding
 Paths are 8-bit strings end to end inside the OS: the track record location (+0xc0), the FileRef

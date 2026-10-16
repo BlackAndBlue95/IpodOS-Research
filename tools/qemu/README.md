@@ -45,8 +45,35 @@ Deterministic screen checks (tourcmp drifts once navigation timing differs betwe
     tools/qemu/pngdiff.py out/a-01.png out/b-01.png        # differing pixels below the status bar
 
 `screens.py` waits for the first frame, plays the keys (`waitN` sleeps, `shot` saves a numbered PNG)
-and prints the run's first-frame, glyph-pass, pre-build and CRASH lines. Test disks: `EF.img` (stock
+and prints the run's first-frame, glyph-pass, pre-build, fbdmg and CRASH lines (`GREP=a,b` adds more).
+`PMUCHARGER=1` keeps the emulated battery from going critical on long tours. Test disks: `EF.img` (stock
 fonts), `EF-fonts.img` (with `FLAC\Fonts`), `EF-classic.img` (`style=classic`).
+
+Instruction and cache profile (`kprof.c`, a TCG plugin). Counts every executed
+instruction per translation block, the IRQ-handler share, memory traffic by region, and misses in a 16 KB
+4-way L1 model of Apple's page table (DRAM write-back, IRAM and IO uncached). `trig=` addresses (region E
+symbols such as `e_libload_boot`, `hk_uiinit`, `render_c`) split the boot into phases:
+
+    qemu-system-arm ... -icount shift=3,sleep=off -plugin libkprof.so,out=k.out,trig=0x...,trig=0x...
+    tools/qemu/kprof.py phases k.out
+    tools/qemu/kprof.py funcs k.out os.s runtime/e.syms t1:t2     # functions ranked by modelled ARM926 cycles
+
+QEMU ignores caches, so cycle figures are a model, not timing. Modelled cycles are ins×BASE + (I+D read
+misses)×P + write misses×W + uncached IRAM fetches×(F−1), with `BASE`, `P`, `W` and `F` overridable in
+the environment. Set `IRAMC=1` for runs made with the plugin's `iramc=1`; `NOSPIN=1` leaves out the
+mdelay/elapsed spins (fixed wall time). Function starts in LISTING are push instructions.
+
+    cc -O2 -fPIC -I<deps>/include/glib-2.0 -I<deps>/lib/glib-2.0/include -I<qemu src>/include/qemu \
+       -bundle -Wl,-undefined,dynamic_lookup -o libkprof.so tools/qemu/kprof.c
+
+Plugin arguments:
+- `out=FILE`
+- `trig=0xADDR` (repeatable): the first run of that TB writes a snapshot and a TB dump.
+- `lr=0xADDR` (repeatable): {lr, r0 ^ r1 << 16} histogram at that TB head, per phase.
+- `iramc=1`: model IRAM 0x22000000-0x22007fff and its VA 0 alias as cacheable.
+- `cp=0xADDR[:R]` (repeatable): copy-routine entry. Per {entry, lr, size in rR (default r2)}: calls, first dst/src, and the instructions and misses inside IRAM libc; analyse with `kprof.py copies`.
+- `wr=0xLO:0xHI` (up to 4): stores into [LO, HI) per store PC and phase.
+- Creating `FILE.mark` writes a snapshot labelled mN and starts the next phase.
 
 Playback test (run it before staging anything that touches video, the sync or the classifier):
 

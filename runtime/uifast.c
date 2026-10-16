@@ -404,6 +404,7 @@ void rc_stop(void)
     log_d((int)ra_dropped); log_s(" dropped for a write; "); log_d((int)ra_checked); log_s(" checked against the disk");
     if (ra_bad) log_s(", MISMATCH: read-ahead turned off  <-- CHECK");
     log_c('\n');
+    hc_log();
     ra_stop();
 }
 __attribute__((used, section(".text.entry"))) int e_devread(uint32_t d, uint32_t lba, void *buf, uint32_t n, uint32_t a5)

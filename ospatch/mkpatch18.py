@@ -28,9 +28,18 @@ ap.add_argument('--hooks', choices=('libload', 'all'), default='all')
 ap.add_argument('--ui-fast', action='store_true', help='UI start-up fixes (uifast.c)')
 ap.add_argument('--ui-lazy', action='store_true', help='screens built in the background after the first frame')
 ap.add_argument('--games-defer', action='store_true', help='skip the games catalog warm-up at boot')
+ap.add_argument('--fb-damage', action='store_true', help='screen copy-back after a buffer swap limited to the drawn rects (fbcopy.c)')
+ap.add_argument('--heap-cache', action='store_true', help='small-block cache in front of os_malloc/os_free (heapcache.c)')
+ap.add_argument('--fast-prims', action='store_true', help='direct paths for dynamic-array fetches and bitset scans (prims.c)')
+ap.add_argument('--ft-raster', action='store_true', help="FreeType 2.14's anti-aliased rasterizer for the smooth renderers (ft/ftgrays_e.c)")
 ap.add_argument('--prof', action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
 ap.add_argument('--governor-floor', action='store_true',
                 help='with the backlight on, the OS governor floors at L1 (108 MHz) instead of pinning L0')
+ap.add_argument('--sleep-delays', action='store_true', help='mdelay from a task sleeps instead of spinning (kfix.c)')
+ap.add_argument('--iram-cache', action='store_true', help='IRAM code pages write-through cacheable (kfix.c)')
+ap.add_argument('--i2c-spin', action='store_true', help="I2C waits out its 100 us bus gap instead of sleeping a 1 ms tick")
+ap.add_argument('--fast-libc', action='store_true', help="Apple's IRAM memcpy/memmove/memset run from a cached copy in E (kfix.c)")
+ap.add_argument('--fast-dcache', action='store_true', help='D-cache range clean/invalidate inline, whole cache from 32 KB (kfix.c)')
 a = ap.parse_args()
 
 img = bytearray(open(a.image, 'rb').read())
@@ -88,6 +97,7 @@ struct.pack_into('<I', img, 0x0c, len(img) - HDR)              # body size, chec
 
 # hooks
 LIBLOAD = 0x0805d62c             # Apple's library loader
+HC_ALLOC_CALLS = (0x081927c0, 0x08191f48, 0x08192434, 0x081927ec)   # bl 0x08192170: malloc, zeroing, no-beep, realloc
 retarget(0x0804d7c4, LIBLOAD, sym['e_libload_boot'])
 retarget(0x081ae29c, LIBLOAD, sym['e_libload_task'])
 # vector stubs (undef, prefetch abort, data abort, reserved, FIQ) -> e_cpu_exc: crash record, then Apple's reset
@@ -206,6 +216,19 @@ if a.hooks == 'all':
     entry_hook(0x08113470, 0xe92d4070, 0xe24dd038, sym['hk_render'])   # UI render pass: deferred theme walk
     entry_hook(0x0806aa08, 0xe92d403e, 0xe1a01000, sym['hk_unmount'])   # volume unmount: our raw device handle closed first (fatdir.c)
     entry_hook(0x081a8444, 0xe92d4ff7, 0xe24dd038, sym['hk_marq'])     # marquee draw
+    if a.heap_cache:   # os_malloc / os_free (tag 2): freed small blocks reused per size (heapcache.c)
+        entry_hook(0x080e07a4, 0xe92d4070, 0xe1a05000, sym['hk_hcmalloc'])
+        entry_hook(0x080dca98, 0xe92d4070, 0xe1a05000, sym['hk_hcfree'])
+        for at in HC_ALLOC_CALLS: retarget(at, 0x08192170, sym['hc_alloc'])   # allocator: flush and retry on failure
+    if a.fast_prims:   # 4-byte array element fetches and the bitset next-set-bit scan (prims.c)
+        entry_hook(0x08299e38, 0xe92d41f0, 0xe3710106, sym['hk_aget'])
+        entry_hook(0x08299d48, 0xe92d41f0, 0xe1a04000, sym['hk_acopy'])
+        entry_hook(0x08299fcc, 0xe92d4070, 0xe1a05000, sym['hk_bsnext'])
+        retarget(0x0829bcc0, 0x0829a010, sym['hk_bsscan7'])    # glyph bitset loops: skip to the next set bit
+        retarget(0x0828f9cc, 0x0829a020, sym['hk_bsscansl'])
+    if a.ft_raster:   # raster_class of the "smooth" and "smooth-lcd" renderer classes (FT_Raster_Funcs 0x0890d8c4)
+        wr(0x0890d914, sym['ft_grays_raster'], 0x0890d8c4)
+        wr(0x0890d950, sym['ft_grays_raster'], 0x0890d8c4)
     entry_hook(0x082d75c8, 0xe92d40f8, 0xe3a05000, sym['hk_fatfree'])  # FAT free count: seeded from FSInfo instead of a full FAT scan
     entry_hook(0x082d61c0, 0xe92d40f8, 0xe1a06000, sym['hk_fatsearch'])  # free-cluster search: raw FAT reads for long ranges
     entry_hook(0x082d6080, 0xe92d4fff, 0xe24dd00c, sym['hk_fatrun'])     # free-run search: starts at the first cluster free on disk
@@ -233,6 +256,9 @@ if a.hooks == 'all':
         wr(0x080e285c, 0xea000000 | (((sym['e_glyph_call'] - 0x080e285c - 8) >> 2) & 0xffffff), 0xeaff1aa5)   # glyph member call: skipped when the font object is not set up (uifast.c)
     if a.games_defer:   # Games manager init: skip the catalog warm-up (Manifest.plist parse); it loads on first use
         wr(0x080f62d8, 0xe1a00000, 0xebfffc29)
+    if a.fb_damage:     # screen copy-back after a swap: only the rects drawn since the last one (fbcopy.c)
+        retarget(0x08281824, 0x0802ced8, sym['e_fbcopy'])
+        entry_hook(0x0809f4d0, 0xe92d41f0, 0xe1a08001, sym['hk_fbdmg'])   # bitmap damage notifier: rects drawn into the two buffers
     if 'hk_tpost' in sym:   # profiler builds: log the boot's software timers
         wr(0x0808487c, 0xeb000000 | (((sym['hk_tpost'] - 0x0808487c - 8) >> 2) & 0xffffff), 0xeb018688)
         wr(0x0808485c, 0xeb000000 | (((sym['hk_tcb'] - 0x0808485c - 8) >> 2) & 0xffffff), 0xe12fff31)
@@ -252,8 +278,29 @@ if a.governor_floor:
     # PowerMgmt (IRAM 0x220029ac): with the backlight timer armed the level is forced to 0 (216 MHz, 1200 mV).
     # Floor it at level 1 (108 MHz, 1100 mV) instead; load still raises it.
     wr(IRAM_BASE + 0x2a4c, 0xe3a00001, 0xe3a00000)
+if a.sleep_delays:      # mdelay veneer (ldr pc, [pc, #-4]) literal: the timer spin -> e_mdelay
+    assert rd(0x0802cf18) == 0xe51ff004
+    wr(0x0802cf1c, sym['e_mdelay'], IRAM_BASE + 0x1f38)
+if a.iram_cache:        # MMU setup's call to the control-bit-23 helper (its only caller) -> e_mmu_iram
+    assert rd(IRAM_BASE + 0x3698) == 0xe51ff004 and rd(IRAM_BASE + 0x45f8) == 0xebfffc26
+    wr(IRAM_BASE + 0x369c, sym['e_mmu_iram'], 0x0802cdc8)
+if a.i2c_spin:          # I2C read 0x08360cac / write 0x08360a78: the gap loop's KS_delay(1) -> nop, it spins on elapsed(last, 100 us)
+    wr(0x08360ce4, 0xe1a00000, 0x1bf330b1)
+    wr(0x08360ab0, 0xe1a00000, 0x1bf3313e)
+LIBC_VENEERS = ((0x0802cedc, 0x020), (0x0802cee4, 0x27c), (0x0802ceec, 0x2d8), (0x0802cef4, 0x2d4), (0x0802cefc, 0x020),
+                (0x0802cf04, 0x0d4), (0x0802cf24, 0x188), (0x0802cf2c, 0x0d4), (0x0802d09c, 0x1f4))   # literal, IRAM offset
+if a.fast_libc:         # IRAM 0x22000020-0x22000317 has no literals or absolute branches: copied as is into kfix_libc
+    src, dst = off(IRAM_BASE + 0x20), HDR + E_LOAD + (sym['kfix_libc'] - E_BASE)
+    assert img[dst:dst + 0x2f8] == bytes(0x2f8)
+    img[dst:dst + 0x2f8] = img[src:src + 0x2f8]
+    for lit, o in LIBC_VENEERS: wr(lit, sym['kfix_libc'] + o - 0x20, IRAM_BASE + o)
+if a.fast_dcache:       # range clean+invalidate, clean, invalidate (addr, len) -> kfix.c, replaced whole
+    entry_hook(0x08039d38, 0xe92d4070, 0xe3100102, sym['hk_dc_cinv'])
+    entry_hook(0x08039d70, 0xe92d4070, 0xe1a06001, sym['hk_dc_clean'])
+    entry_hook(0x0804e918, 0xe92d4070, 0xe1a06001, sym['hk_dc_inv'])
 
 open(a.out, 'wb').write(img)
 print('ok %s: %d bytes, body %#x, E %#x-%#x (%d bytes of %d), heap from %#x%s, md5 %s' % (
     a.out, len(img), len(img) - HDR, E_BASE, E_END, len(e), E_RESERVE, E_BASE + E_RESERVE,
-    ', governor floor L1' if a.governor_floor else '', hashlib.md5(img).hexdigest()))
+    (', governor floor L1' if a.governor_floor else '') + (', sleep delays' if a.sleep_delays else '') + (', IRAM cached' if a.iram_cache else '') + (', I2C spin' if a.i2c_spin else '') + (', fast libc' if a.fast_libc else '') + (', fast dcache' if a.fast_dcache else ''),
+    hashlib.md5(img).hexdigest()))

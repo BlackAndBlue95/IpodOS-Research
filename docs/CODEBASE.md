@@ -28,6 +28,7 @@ OS's startup copy is extended to copy it, and the heap base moves past it.
 |---|---|
 | `runtime/` | Region E (C, ARM926). `build.sh` produces `e.bin` and `e.syms`. |
 | `runtime/flac/` | FLAC reader/decoder glue (`flacblob.c`), album art (`art.c`, included by `flacblob.c`), cover scaling (`cover.c`). `rbflac*`, `rbfir*`, `rbjpeg*` are adapted from Rockbox; `tjpgd*` is ChaN's TJpgDec. |
+| `runtime/ft/` | FreeType 2.14.3's anti-aliased rasterizer (`ftgrays.c`, `ftgrays.h`, `ftimage.h`, FTL licence) with the iPod changes marked `iPod:`; `ftgrays_e.c` builds it standalone. |
 | `runtime/host/` | Mac-side tools: Settings resource generator, theme data generator, theme preview, C/Python colour-rule parity check, sun test. |
 | `libsync/` | The iTunesDB sync (shared with the Rockbox plugin and the host build), host tools and tests. |
 | `ospatch/` | Image patcher (`mkpatch18.py`), checker (`checkpatch.py`), firmware partition tool (`fwpart.py`), `HOOKS.md`. `mkpatch.py`/`stub.*` are the older pre-region-E patcher. |
@@ -88,6 +89,16 @@ sync → `os_libload` → health line → art database → headset plug events �
   A fill that overlaps any write is dropped, a failed fill is remembered, the first 8 fills are
   compared with a direct read (a mismatch turns read-ahead off), and the blocks are freed at the
   first frame once no reader is inside.
+- **Boot CPU (optional flags, `ospatch/HOOKS.md` "Boot CPU" and "Kernel prototypes").** Between UI init
+  and the first frame the UI task's time went to Apple's heap (one size-sorted free list walked by every
+  malloc and free), the dynamic-array methods `0x08299xxx` (several virtual calls per 4-byte fetch,
+  bitsets scanned one call per bit, including the glyph pass's 64K-bit sets) and FreeType's 2007-era
+  anti-aliased rasterizer. `runtime/heapcache.c` (`--heap-cache`) keeps freed small blocks per size;
+  `runtime/prims.c` (`--fast-prims`) reads 4-byte arrays directly and scans bitsets by word;
+  `runtime/ft/` (`--ft-raster`) is FreeType 2.14.3's `ftgrays.c` with its cells in the OS's render pool;
+  `runtime/kfix.c` holds the kernel survey's fixes (`docs/KERNEL-SURVEY.md`). Measured with QEMU
+  `-icount shift=3,sleep=off` as UI-window CPU (window minus drive-read time): 1540 ms → 1077 ms with
+  all of them; disk times under icount are noise.
 
 Measured on a 746-track library: OS start → library load 1.8 s, our sync 0.33 s (unchanged
 library), Apple's loader 5.2 to 5.8 s (pure CPU at L0, no per-track file access), art update 9 ms.

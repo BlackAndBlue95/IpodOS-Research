@@ -3,7 +3,7 @@
     screens.py IMAGE.dec DISK.img OUT_PREFIX [KEY|waitN|shot ...]
 Keys are monitor sendkey names (e/q wheel, ret select, w menu, a/d prev/next, s play); waitN sleeps
 N seconds; shot saves OUT_PREFIX-NN.png. Without any shot, one screenshot OUT_PREFIX.png at the end.
-Prints the run's first-frame, glyph-pass, pre-build and CRASH log lines. Clone and kernel are removed."""
+Prints the run's first-frame, glyph-pass, pre-build, fbdmg and CRASH log lines (GREP=a,b adds more). Clone and kernel are removed."""
 import os, socket, struct, subprocess, sys, time
 
 R = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -54,6 +54,7 @@ try:
 finally:
     q.kill(); q.wait()
     print(' | '.join(l.strip() for l in rtlog().splitlines()
-                     if any(w in l for w in ('CRASH', 'first frame', 'pre-build done', 'glyph pass'))))
+                     if any(w in l for w in ('CRASH', 'first frame', 'pre-build done', 'glyph pass', 'fbdmg')
+                            + tuple(w for w in os.environ.get('GREP', '').split(',') if w))))
     for f in (clone, kernel, mon):
         if os.path.exists(f): os.remove(f)

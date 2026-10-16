@@ -73,6 +73,7 @@ void boost_hold(uint32_t ms);
 int boost_begin(void);
 void boost_end(int boosted);
 void power_log(void);
+void hc_log(void);                                   /* heapcache.c: boot stats */
 
 /* freestanding helpers (flac/flacblob.c) */
 #include <stddef.h>
