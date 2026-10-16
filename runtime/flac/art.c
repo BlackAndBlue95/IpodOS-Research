@@ -111,8 +111,11 @@ out:
 /* Album folders seen, with their art. Entries are never freed: the OS may still hold an offset
  * into one of their blocks. After a library load each entry resolves again against covers.db;
  * the old blocks leak, a few bytes each. */
-typedef struct Cov { struct Cov *next; uint32_t *blk, *nat; uint64_t key; uint32_t gen; char dir[1]; } Cov;
+typedef struct Cov { struct Cov *next; uint32_t *blk, *nat; uint64_t key; uint32_t gen, id; char dir[1]; } Cov;
 static Cov *covs;
+static uint32_t ncovs;
+/* artwork image id of each folder's album image: above the ids an ArtworkDB holds */
+#define ART_ID0 0x7f000000u
 
 /* Art for a folder path (dlen bytes, with the trailing backslash): covers.db first, else a
    cover file in the folder, decoded on request. */
@@ -151,21 +154,39 @@ static void resolve_cover(Cov *c, const char *path, int dlen)
         }
     }
 }
-static Cov *find_cover(const char *path, int dlen)
+/* the folder's entry, made unresolved if new */
+static Cov *cov_of(const char *path, int dlen)
 {
+    static Cov *last;                        /* an album's tracks come one after another */
     Cov *c;
+    if (last && !mcmp(last->dir, path, dlen) && !last->dir[dlen]) return last;
     for (c = covs; c; c = c->next)
-        if (!mcmp(c->dir, path, dlen) && !c->dir[dlen]) {
-            if (c->gen != covs_gen) resolve_cover(c, path, dlen);
-            return c;
-        }
-    c = os_malloc(sizeof(Cov) + dlen + 1);
-    if (!c) return 0;
+        if (!mcmp(c->dir, path, dlen) && !c->dir[dlen]) return last = c;
+    if (ncovs >= 0xffffff || !(c = os_malloc(sizeof(Cov) + dlen + 1))) return 0;
     memcpy(c->dir, path, dlen); c->dir[dlen] = 0;
     c->key = artdb_key(c->dir);
-    resolve_cover(c, path, dlen);
+    c->blk = c->nat = 0; c->gen = covs_gen - 1; c->id = ART_ID0 + ncovs++;
     c->next = covs; covs = c;
+    return last = c;
+}
+static void cov_fresh(Cov *c)
+{
+    int n = 0;
+    if (c->gen == covs_gen) return;
+    while (c->dir[n]) n++;
+    resolve_cover(c, c->dir, n);
+}
+static Cov *find_cover(const char *path, int dlen)
+{
+    Cov *c = cov_of(path, dlen);
+    if (c) cov_fresh(c);
     return c;
+}
+static Cov *cov_by_id(uint32_t id)
+{
+    Cov *c;
+    for (c = covs; c; c = c->next) if (c->id == id) return c;
+    return 0;
 }
 int art_flac_picture(const char *path, uint32_t *off, uint32_t *len) { return flac_picture(path, off, len); }
 
@@ -238,9 +259,13 @@ static const uint8_t *ce_px(struct CE *e);
 #define NBIND 32
 static struct Geo { uint16_t w, h, stride; } geos[NGEO];
 static uint32_t ngeo;
-static struct Bind { void *stream; const char *cov; struct CE *ce; uint32_t w, h, stride, size, pos, seq; } bind[NBIND];
+static struct Bind { void *stream; const char *cov, *db; struct CE *ce; uint32_t w, h, stride, size, pos, seq, dboff; } bind[NBIND];
 static uint32_t bind_seq;
-static void bind_free(struct Bind *s) { if (s->ce) ce_put(s->ce); s->ce = 0; s->stream = 0; }
+static void bind_free(struct Bind *s)
+{
+    if (s->ce) ce_put(s->ce);
+    s->ce = 0; s->db = 0; s->stream = 0;
+}
 static int geo_index(uint32_t w, uint32_t h, uint32_t stride)
 {
     uint32_t i;
@@ -322,6 +347,9 @@ static int __attribute__((used)) seek_c(uint32_t *r)
     s->stream = (void *)r[0]; s->cov = blk_cov(blk_jpeg(blk)); s->ce = 0;
     s->w = geos[g].w; s->h = geos[g].h; s->stride = geos[g].stride;
     s->size = s->h * s->stride; s->pos = 0; s->seq = ++bind_seq;
+    /* 320x320 from covers.db: read straight into the caller's buffer, no cache copy */
+    if (blk[0] == ARTMAGIC3 && s->w == 320 && s->h == 320 && s->size == (uint32_t)afmt[1].size
+        && artdb_lookup(blk_key(blk), &s->dboff, 0, 0, 0, 0) > 0) { s->db = blk_cov(blk); s->dboff += afmt_off(1); }
     TR(5)++;
     TR(4) = 3;
     r[0] = 0;
@@ -336,6 +364,24 @@ static int __attribute__((used)) read_c(uint32_t *r)
     int rc;
     if (!s) return 0;
     TR(20) = (TR(20) & ~0xff00u) | cur_task() << 8;
+    if (s->db && !s->ce) {
+        File *f = open_file(s->db);                  /* per call: a stream Apple drops keeps no handle */
+        int got = 0, k;
+        n = r[1];
+        if (n > s->size - s->pos) n = s->size - s->pos;
+        if (f && !f->vt->seek(f, (int64_t)(s->dboff + s->pos), 0))
+            while (got < (int)n && (k = f->vt->read(f, (uint8_t *)r[2] + got, n - got, 2)) > 0) got += k;
+        if (f) { f->vt->close(f); f->vt->del(f); }
+        if (got == (int)n) {
+            s->pos += n;
+            if (r[3]) *(uint32_t *)r[3] = n;
+            TR(5) += 0x10000;
+            if (s->pos >= s->size) bind_free(s);
+            r[0] = 0;
+            return 1;
+        }
+        s->db = 0;                  /* the file failed: the cache path decodes the cover */
+    }
     if (!s->ce) {
         s->ce = cache_get(s->cov, s->w, s->h, s->stride, &rc);
         TR(6) = (TR(6) & 0xffffff00) | rc;
@@ -370,47 +416,28 @@ HOOK(hk_seek, seek_c, 0xe92d43f8, 0x0826d8e4)
 HOOK(hk_read, read_c, 0xe92d47f0, 0x0826d600)
 HOOK(hk_parse, parse_c, 0xe92d43f0, 0x0828a5b0)   /* WAV parser: .flac becomes our reader */
 
-/* One artwork image per album: tracks of the same album get the image made for the first one
-   while the OS still has it (looked up by its id, img+12), so the OS sees the same art and keeps
-   what it has drawn instead of fetching the cover again for every track. */
-#define NALBIMG 64
-static struct { const uint32_t *blk; uint32_t id; } albimg[NALBIMG];
-static int nalbimg, albimg_next;
-static uint32_t albimg_reused;
-static void *art_find(void *lib, uint8_t *track)
+/* One artwork image per album folder, with the folder's id (img+12), shared by its tracks */
+/* Apple's image-by-id past its entry hook (hk_imgid) */
+__attribute__((naked, section(".text.entry"), used)) static void *img_by_id_orig(void *lib, uint32_t id)
 {
-    void *r = os_art_find(lib, track);
-    char path[300];
-    const char *cov;
-    uint8_t *img, *th;
-    uint32_t *blk;
-    int n, d, i, cl;
-    TR(56)++;
-    if (r || !lib || !track || *(uint32_t *)(track + 0xf0)) return r;
-    n = track_path(track + 0xc0, path, sizeof(path));
-    if (n < 6 || path[n - 5] != '.' || (path[n - 4] | 32) != 'f' || (path[n - 1] | 32) != 'c') return 0;
-    TR(50)++;
-    for (d = n; d > 0 && path[d - 1] != '\\'; d--);
-    { Cov *c = find_cover(path, d); blk = c ? (c->nat ? c->nat : c->blk) : 0;
-      if (art_log < 16) { art_log++; log_s("   art: find "); log_name(path);
-        log_s(c ? (blk == (uint32_t *)c->nat && c->nat ? " -> covers.db\n" : (blk ? " -> jpeg\n" : " -> no cover\n")) : " -> no album\n"); } }
-    if (!blk) { TR(54)++; return 0; }
-    (void)cov; (void)cl;
-    for (i = 0; i < nalbimg; i++)
-        if (albimg[i].blk == blk) {
-            uint8_t *im = os_img_by_id(lib, albimg[i].id);
-            if (im && is_ours_img(im)) { albimg_reused++; TR(54) += 0x10000; if (art_log < 16) log_s("   art: same album, image kept\n"); return im; }
-            break;
-        }
-    img = os_img_new(lib, 0);
-    if (!img) return 0;
-    if (i < nalbimg) albimg[i].id = *(uint32_t *)(img + 12);
-    else {
-        int k = nalbimg < NALBIMG ? nalbimg++ : (albimg_next++ % NALBIMG);
-        albimg[k].blk = blk; albimg[k].id = *(uint32_t *)(img + 12);
+    __asm__ volatile(".word 0xe92d41f0\n ldr pc, 1f\n 1: .word 0x08045544\n");
+}
+/* The album image with the folder's id: made on first use (track: whose dbid it takes, or 0),
+   its thumbnails pointed at the folder's current cover block */
+static uint8_t *cov_image(void *lib, Cov *c, const uint8_t *track)
+{
+    uint32_t *blk = c->nat ? c->nat : c->blk;
+    uint8_t *img = img_by_id_orig(lib, c->id), *th;
+    int i;
+    if (!blk) return 0;
+    if (img) {
+        if (!is_ours_img(img)) return 0;
+        for (i = 0; i < 4; i++)
+            if ((th = os_thumb_iter(img, 0, afmt[i].fmt))) *(uint32_t *)(th + 24) = (uint32_t)blk;
+        return img;
     }
-    *(uint32_t *)(img + 16) = *(uint32_t *)(track + 0x110);
-    *(uint32_t *)(img + 20) = *(uint32_t *)(track + 0x114);
+    if (!(img = os_img_new(lib, c->id))) return 0;
+    if (track) { *(uint32_t *)(img + 16) = *(uint32_t *)(track + 0x110); *(uint32_t *)(img + 20) = *(uint32_t *)(track + 0x114); }
     for (i = 0; i < 4; i++) {
         th = os_thumb_new(img, afmt[i].fmt, 0);
         if (!th) continue;
@@ -420,8 +447,165 @@ static void *art_find(void *lib, uint8_t *track)
         *(uint32_t *)(th + 24) = (uint32_t)blk;           /* "ithmb offset": our cover */
         *(uint32_t *)(th + 28) = afmt[i].size;
     }
-    TR(54) += 0x10000;
     return img;
+}
+/* image by id (0x08045540): one of our album ids gets its image made if the OS asks first */
+#define ART_ALIAS 0x01000000u                    /* id - ART_ALIAS: the same album again (Now Playing row) */
+static int __attribute__((used)) imgid_c(uint32_t *r)
+{
+    Cov *c;
+    uint32_t id = r[1] - ART_ID0 + ART_ALIAS < ncovs ? r[1] + ART_ALIAS : r[1];
+    if (id - ART_ID0 >= ncovs || !r[0] || !(c = cov_by_id(id))) return 0;
+    cov_fresh(c);
+    r[0] = (uint32_t)cov_image((void *)r[0], c, 0);
+    return 1;
+}
+HOOK(hk_imgid, imgid_c, 0xe92d41f0, 0x08045544)
+static void *art_find(void *lib, uint8_t *track)
+{
+    void *r = os_art_find(lib, track);
+    char path[300];
+    uint32_t *blk;
+    Cov *c;
+    int n, d;
+    TR(56)++;
+    if (r || !lib || !track || *(uint32_t *)(track + 0xf0)) return r;
+    n = track_path(track + 0xc0, path, sizeof(path));
+    if (n < 6 || path[n - 5] != '.' || (path[n - 4] | 32) != 'f' || (path[n - 1] | 32) != 'c') return 0;
+    TR(50)++;
+    for (d = n; d > 0 && path[d - 1] != '\\'; d--);
+    c = find_cover(path, d); blk = c ? (c->nat ? c->nat : c->blk) : 0;
+    if (art_log < 16) { art_log++; log_s("   art: find "); log_name(path);
+        log_s(c ? (blk == (uint32_t *)c->nat && c->nat ? " -> covers.db\n" : (blk ? " -> jpeg\n" : " -> no cover\n")) : " -> no album\n"); }
+    if (!blk) { TR(54)++; return 0; }
+    TR(54) += 0x10000;
+    return cov_image(lib, c, track);
+}
+/* the database load's location of a FLAC track (path.c, after its isflac): its album folder gets an image id */
+void art_note(const uint8_t *track)
+{
+    char path[300];
+    int n = track_path(track + 0xc0, path, sizeof(path)), d;
+    if (n <= 0) return;
+    for (d = n; d > 0 && path[d - 1] != '\\'; d--);
+    cov_of(path, d);
+}
+/* Main menu art pane (0x081ac9b8): image ids per media kind from the tracks' ArtworkDB links;
+   FLAC tracks have none, so each album folder with art adds its id to the music list. */
+#define os_sc_build  ((void (*)(void *))0x081ac9b8)
+#define os_sc_reset  ((void (*)(void *))0x081ac804)                 /* library unload's reset (0x0805de90) */
+#define os_sc_lists  ((void (*)(void *, void **))0x081ac710)        /* (pane, &holder): the loader hands its lists over */
+#define os_arr_ctor  ((void *(*)(void *, void *, int, int))0x082a035c)
+#define os_sp_get    ((void *(*)(void *))0x083cb184)
+#define os_ids_add   ((void (*)(void *, int, uint32_t))0x08142254)
+static void add_folders(void *ids)
+{
+    Cov *c;
+    int n = 0, k = 0;
+    for (c = covs; c; c = c->next, k++) {
+        cov_fresh(c);
+        if (c->blk) { os_ids_add(ids, 0, c->id); n++; }
+    }
+    log_s("   art: "); log_d(n); log_s(" of "); log_d(k); log_s(" album folders to the menu art pane\n");
+}
+/* --ui-lazy: the pane starts with Apple's lists and gets the album folders 0.5 s after the first
+   frame, past the boot's heap low point */
+static uint8_t *sc_late;
+static uint32_t np_shown;                                        /* the album in category 2 (Now Playing row) */
+static uint32_t *sc_list[4], sc_nlist[4];                        /* the pane's own lists (the build empties +0xf4) */
+static void sc_remember(const void *ids)
+{
+    int cat;
+    for (cat = 0; cat < 4; cat++) {
+        const uint32_t *v = (const uint32_t *)((const uint8_t *)ids + 12 * cat);
+        uint32_t n = (v[1] - v[0]) / 4;
+        if (sc_list[cat]) { os_free(sc_list[cat]); sc_list[cat] = 0; }
+        sc_nlist[cat] = 0;
+        if (n && (sc_list[cat] = os_malloc(4 * n))) { memcpy(sc_list[cat], (void *)v[0], 4 * n); sc_nlist[cat] = n; }
+    }
+}
+/* 4 id lists as the loader makes them, from the pane's own; np: category 2 holds that album instead */
+static void *sc_new_lists(uint32_t np)
+{
+    void *src = os_malloc(48);
+    uint32_t i;
+    int cat;
+    if (!src) return 0;
+    os_arr_ctor(src, (void *)0x0802df28, 12, 4);
+    for (cat = 0; cat < 4; cat++)
+        if (!np || cat != 2) for (i = 0; i < sc_nlist[cat]; i++) os_ids_add(src, cat, sc_list[cat][i]);
+    if (np) {
+        os_ids_add(src, 2, np);
+        if (np - ART_ID0 < ncovs) os_ids_add(src, 2, np - ART_ALIAS);   /* one album alone stays still; two ids keep it panning */
+    }
+    return src;
+}
+/* hands the pane new lists as a library reload does: reset, lists, build (own: they become the pane's own) */
+static int sc_relist(uint8_t *sc, void *src, int own)
+{
+    void **holder = os_malloc(12);
+    if (!holder) return 0;
+    if (own) sc_remember(src);
+    holder[0] = src; ((uint32_t *)holder)[1] = 1; ((uint32_t *)holder)[2] = 0;
+    os_sc_reset(sc);
+    os_sc_lists(sc, (void **)&holder);                           /* takes a reference in state 0, which the reset gives */
+    if (os_sp_get(sc + 0xf4) != src) { log_s("   art: the menu art pane refused its lists  <-- CHECK\n"); os_free(holder); return 0; }
+    ((uint32_t *)holder)[1]--;                                   /* the pane keeps its own reference */
+    os_sc_build(sc);
+    np_shown = 0;
+    return 1;
+}
+__attribute__((section(".text.entry"), used, noinline)) void e_showcase(uint8_t *sc)
+{
+    CRUMB();
+    void *ids = os_sp_get(sc + 0xf4);
+    extern int pb_finished;
+    np_shown = 0;
+    if (!ids) { log_s("   art: no art pane list\n"); os_sc_build(sc); return; }
+    if (*(const uint32_t *)0x081aeb1c != 0xe3a00003 && !pb_finished) {      /* --ui-lazy (e_pb_done there), pre-build to come */
+        sc_remember(ids);                                        /* Apple's lists, the folders added later */
+        sc_late = sc;
+        log_s("   art: menu art pane lists after the first frame\n");
+    } else { add_folders(ids); sc_remember(ids); }
+    os_sc_build(sc);
+}
+/* a pre-build tick 0.5 s after the first frame, or its end (uifast.c, UI task) */
+void art_showcase_late(void)
+{
+    uint8_t *sc = sc_late;
+    void *src;
+    if (!sc) return;
+    sc_late = 0;
+    if (!(src = sc_new_lists(0))) return;
+    add_folders(src);
+    if (!sc_relist(sc, src, 1)) return;
+    /* the pane's own change notice (0x081ac540): a listening main menu redoes its hilite */
+    (*(void (**)(void *, uint32_t, uint32_t))(*(uint8_t **)sc + 0x58))(sc, 0x55693332, 0x7f82);
+    log_s("   art: menu art pane rebuilt at "); log_d((int)(*(volatile uint32_t *)0x3c7000b4 / 1000)); log_s(" ms, item "); log_d(*(int8_t *)(sc + 0xec)); log_s("\n");
+    if (*(int8_t *)(sc + 0xec) != -1) ((void (*)(void *))0x081ac010)(sc);   /* the menu picked an item: resume, as its activation does */
+}
+
+/* Now Playing row (0x08224c10): with art, the playing album goes in the pane's unused category 2
+   and pans like the Music row; without, Apple's no-art layout */
+static const char np_pane[] = "MediaContentHilited", np_noart[] = "NoArtNowPlayingHilited";
+static const char * __attribute__((used)) np_state_c(void)
+{
+    uint8_t *sc = ((uint8_t *(*)(void))0x081ad164)();
+    uint32_t id = ((uint32_t (*)(void))0x081eca94)();       /* the playing song's image id, 0 without art */
+    void *src;
+    if (!id || sc_late) return np_noart;
+    if (id != np_shown) {                                         /* the pane's own lists stay as they are */
+        if (!(src = sc_new_lists(id)) || !sc_relist(sc, src, 0)) return np_noart;
+        np_shown = id;
+        ((void (*)(void *))0x081ac010)(sc);                       /* resume, as the menu's activation does */
+    }
+    if (!((int (*)(void *, int))0x081abeb0)(sc, 2)) return np_noart;
+    ((void (*)(void *, int))0x081abf00)(sc, 2);
+    return np_pane;
+}
+__attribute__((naked, section(".text.entry"), used)) void e_np_state(void)
+{
+    __asm__ volatile("push {r0, lr}\n bl np_state_c\n mov r1, r0\n pop {r0, pc}\n");
 }
 
 #include "rbjpeg.h"

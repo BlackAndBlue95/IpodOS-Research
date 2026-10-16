@@ -4,20 +4,23 @@ stock osos untouched (the Rockbox bootloader boots osfl; MENU still boots stock 
 Apple's bootloader).
 
   fwpart.py add  PARTITION.bin OS.dec OUT.bin    new partition image with the osfl section
+  fwpart.py rsrc PARTITION.bin TREE OUT.bin      TREE's files added to Apple's resource volume
   fwpart.py show PARTITION.bin                   list the MSE directory
   fwpart.py verify PARTITION.bin OS.dec          check the osfl section holds OS.dec
+
+rsrc (FAT16 at devOff + 0x1000 + entryOff) grows when TREE does not fit; later sections move up.
 
 Partition layout (S5L8702 "MSE"): ']ih[' at +0x100, directory at +0x5000, 12 entries of 40
 bytes {tag 'ATA!' (bytes reversed), type (reversed), u32, devOff, len, addr, entryOff,
 checksum, version, load}. A section's data starts at devOff + 0x1000. The checksum is the
 32-bit sum of the section's bytes over [devOff + 0x1000, +len).
 Write the result with:  sudo dd if=OUT.bin of=/dev/rdisk<N>s2 bs=1m   (iPod in disk mode)."""
-import struct, sys
+import os, struct, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 DIR = 0x5000
 ENT = 40
 NENT = 12
-OSFL_OFF = 0x5944000          # first 4 KiB block after the hash section's data
 TYPE = b'osfl'
 
 
@@ -43,16 +46,64 @@ def show(img):
         print('  %2d %s %s devOff %08x len %08x addr %08x entryOff %08x chk %08x ver %08x load %08x' % (i, tag, typ, dev, ln, addr, eoff, chk, ver, load))
 
 
+def grow_rsrc(img, tree):
+    """Adds the files under tree to Apple's resource volume (rsrc, the OS's volume 4), growing
+    it when they do not fit; the sections after it move up by the growth."""
+    from rsrcvol import Fat16
+    ents = entries(img)
+    i = next(k for k, e in enumerate(ents) if e and e[1] == b'rsrc')
+    dev, ln, eoff = ents[i][3], ents[i][4], ents[i][6]
+    vstart = dev + 0x1000 + eoff
+    vol = Fat16(img[vstart:vstart + ln])
+    old_end = vstart + len(vol.build())
+    files = {}
+    for root, _, names in sorted(os.walk(tree)):
+        for n in sorted(names):
+            if n.startswith('.'): continue
+            p = os.path.join(root, n)
+            files[os.path.relpath(p, tree).replace(os.sep, '/')] = open(p, 'rb').read()
+    for p in files:                                    # a file being replaced gives its clusters back
+        old = vol.read(p)
+        if old is not None: vol.add(p, b'')
+    need = vol.clusters_for(files) - vol.free_count()
+    if need > 0: vol.grow(need + 256)                  # and 512 KB to spare, as Apple left some
+    for p, d in files.items(): vol.add(p, d)
+    new = vol.build()
+    # whole 4096-byte blocks, or the OS mounts nothing (0x0806eb80)
+    nlen = (eoff + len(new) + 0xfff) & ~0xfff
+    # the sections after rsrc keep their order and spacing; their first byte lands past it
+    later = [e for e in ents if e and e[3] > dev]
+    first = min(e[3] for e in later) if later else dev + 0x1000 + nlen   # nothing after rsrc: nothing moves
+    last = max(e[3] + 0x1000 + e[4] for e in later) if later else first
+    delta = max(0, dev + 0x1000 + nlen - first)
+    assert last + delta <= len(img), 'partition too small for the grown rsrc'
+    if delta:
+        img[first + delta:last + delta] = img[first:last]
+        for k, e in enumerate(ents):
+            if e and e[3] > dev: struct.pack_into('<I', img, DIR + k * ENT + 0x0c, e[3] + delta)
+    img[vstart:first + delta] = new + b'\0' * (first + delta - vstart - len(new))
+    struct.pack_into('<I', img, DIR + i * ENT + 0x10, nlen)
+    struct.pack_into('<I', img, DIR + i * ENT + 0x1c, checksum(img[dev + 0x1000:dev + 0x1000 + nlen]))
+    print('rsrc: %d files added, volume %d -> %d bytes (%d clusters free), later sections moved by %#x'
+          % (len(files), old_end - vstart, len(new), vol.free_count(), delta))
+
+
 def main():
     cmd = sys.argv[1]
     img = bytearray(open(sys.argv[2], 'rb').read())
     assert img[0x100:0x104] == b']ih[', 'not a firmware partition image'
     if cmd == 'show':
         show(img); return
+    if cmd == 'rsrc':
+        grow_rsrc(img, sys.argv[3])
+        open(sys.argv[4], 'wb').write(img)
+        show(img); return
     os_img = open(sys.argv[3], 'rb').read()
     assert os_img[:4] == b'8702', 'not an IMG1 OS image'
     ents = entries(img)
     end = max(e[3] + 0x1000 + e[4] for e in ents if e and e[1] != TYPE)
+    cur = next((e for e in ents if e and e[1] == TYPE), None)
+    OSFL_OFF = cur[3] if cur else (end + 0xfff) & ~0xfff   # where the osfl entry is, else after the last section
     assert OSFL_OFF >= (end + 0xfff) & ~0xfff, 'osfl offset overlaps a section'
     if cmd == 'verify':
         e = next((e for e in ents if e and e[1] == TYPE), None)

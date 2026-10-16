@@ -86,7 +86,9 @@ E_ENTRY int e_loc_db(char *t, const char *s, int n)
     rc = os_loc_db(t, s, n);
     if (!rc && s && t[0xe4] == 1) mark(t + 0xc0, s, n, 1);
     if (s && isflac(s, n)) {
+        void art_note(const uint8_t *track);
         t[0x1c] |= 0x40;                                   /* .flac: has artwork */
+        art_note((const uint8_t *)t);                      /* its album folder, for the menu art pane */
         lib_tracks++;
         if (!*(uint32_t *)(t + 0x2c)) lib_noartist++;
         if (!*(uint32_t *)(t + 0x34)) lib_noalbum++;

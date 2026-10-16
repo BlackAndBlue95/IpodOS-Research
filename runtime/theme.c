@@ -840,17 +840,42 @@ __attribute__((naked, section(".text.entry"), used)) void hk_marq(void)
         ".word 0xe92d4ff7\n ldr pc, 2f\n"
         "1: .word marq_c\n 2: .word 0x081a8448\n");
 }
-/* ---- Modern style icons: Apple SF Symbols rendered on the Mac (tools/sf/gen_sficons.py), each in
-   its original's format and size. The image carries both versions: Modern points the package index
-   entries at the new ones (sf_raw, in region E), Classic at the originals, so either costs a few
-   hundred word writes. The theme then takes its pristine copies from whichever is current, so
-   Dark/accent recolour them as usual. The accent tiles (base blue + white symbol) are mixed toward
-   the accent from their pristine palettes. The generated header is personal-use data that is never
-   committed; without it this does nothing. ---- */
+/* ---- Icon sets: Resources/Icons/{Classic,Modern}.bin on the resource volume; the one in use is read
+   into the package's bytes and the index points at it (sficons_data.h, never committed). ---- */
+static void forget(uint32_t id);         /* the bitmap holds its source's pixels again (below) */
 #if __has_include("sficons_data.h")
 #include "sficons_data.h"
-static uint32_t sf_orig_off[SF_N];
+static uint32_t sf_orig_off[SF_N];       /* Classic offsets + 1 (0: not taken yet) */
 static uint8_t *sf_pal[SF_NACCENT];
+static int sf_set;                       /* the set in the package: 0 Classic (as built), 1 Modern */
+static int sf_index(uint32_t id) { uint32_t i; for (i = 0; i < SF_N; i++) if (sf_tab[i][0] == id) return (int)i; return -1; }
+/* where icon k starts in a set's file */
+static uint32_t sf_file_off(int modern, uint32_t k)
+{
+    uint32_t i, o = 16;
+    for (i = 0; i < k; i++) o += (sf_tab[i][modern ? 1 : 2] + 3) & ~3u;
+    return o;
+}
+/* reads a set into its place: 0 ok, -1 no file or not this table's, -2 failed part way */
+static int sf_load(int modern)
+{
+    File *f = rsrc_open(modern ? "Resources/Icons/Modern.bin" : "Resources/Icons/Classic.bin");
+    uint32_t h[4], i, want = 0, pad;
+    int rc = 0;
+    if (!f) return -1;
+    for (i = 0; i < SF_N; i++) want += (sf_tab[i][modern ? 1 : 2] + 3) & ~3u;
+    if (f->vt->read(f, h, 16, 2) != 16 || h[0] != 0x4e434946 || h[1] != SF_SETS || h[2] != (uint32_t)modern || h[3] != want) rc = -1;
+    for (i = 0; !rc && i < SF_N; i++) {
+        uint32_t n = sf_tab[i][modern ? 1 : 2], got = 0;
+        uint8_t *d = (uint8_t *)PKG_DATA + (modern ? sf_tab[i][3] : sf_orig_off[i] - 1), tail[4];
+        int k;
+        while (got < n && (k = f->vt->read(f, d + got, (int)(n - got), 2)) > 0) got += k;
+        pad = -n & 3;
+        if (got != n || (pad && f->vt->read(f, tail, (int)pad, 2) != (int)pad)) rc = -2;
+    }
+    f->vt->close(f); f->vt->del(f);
+    return rc;
+}
 static uint32_t *pkg_slot(uint32_t type, uint32_t id)
 {
     uint32_t nt = PKG[2], i, k;
@@ -866,19 +891,33 @@ static uint32_t *pkg_slot(uint32_t type, uint32_t id)
 static void sf_apply(const uint8_t *acc, int modern)
 {
     uint32_t i, j, m, t0 = TIMER_E;
-    int ok = 0, bad = 0;
-    for (i = 0; i < SF_N; i++) {
+    int rc = 0;
+    for (i = 0; i < SF_N; i++) {                                  /* Apple's offsets, before anything moves */
         uint32_t *e = pkg_slot(T_BMAP, sf_tab[i][0]);
-        if (!e || (e[2] != sf_tab[i][3] && e[2] != sf_tab[i][1])) { bad++; continue; }
-        if (!sf_orig_off[i]) sf_orig_off[i] = e[1] + 1;          /* +1: 0 means not saved yet */
-        e[1] = modern ? (uint32_t)(sf_raw + sf_tab[i][2]) - PKG_DATA : sf_orig_off[i] - 1;
-        e[2] = modern ? sf_tab[i][1] : sf_tab[i][3];              /* a recoded image has its own size */
-        ok++;
+        if (!e) { log_s("   theme: SF icons: no index entry, off\n"); return; }
+        if (!sf_orig_off[i]) {
+            if (sf_set || e[2] != sf_tab[i][2]) { log_s("   theme: SF icons: index not Apple's, off\n"); return; }
+            sf_orig_off[i] = e[1] + 1;
+        }
     }
-    for (j = 0; modern && j < SF_NACCENT; j++) {
+    if (modern != sf_set) {
+        if ((rc = sf_load(modern)) == -2 && sf_load(sf_set))      /* part written: the other set back */
+            log_s("   theme: SF icons: neither set could be read back  <-- CHECK\n");
+        if (!rc) {
+            sf_set = modern;
+            for (i = 0; i < SF_N; i++) {
+                uint32_t *e = pkg_slot(T_BMAP, sf_tab[i][0]);
+                e[1] = modern ? sf_tab[i][3] : sf_orig_off[i] - 1;
+                e[2] = sf_tab[i][modern ? 1 : 2];                 /* a recoded image has its own size */
+                forget(sf_tab[i][0]);                             /* the theme starts from the set's pixels */
+            }
+            for (j = 0; j < SF_NACCENT; j++) if (sf_pal[j]) { os_free(sf_pal[j]); sf_pal[j] = 0; }
+        }
+    }
+    for (j = 0; sf_set && j < SF_NACCENT; j++) {
         uint8_t *o = 0, *pal;
         uint32_t n = 0, np;
-        for (i = 0; i < SF_N; i++) if (sf_tab[i][0] == sf_accent[j]) { o = sf_raw + sf_tab[i][2]; n = sf_tab[i][1]; }
+        for (i = 0; i < SF_N; i++) if (sf_tab[i][0] == sf_accent[j]) { o = (uint8_t *)PKG_DATA + sf_tab[i][3]; n = sf_tab[i][1]; }
         if (!o || (o[0] != 0x64 && o[0] != 0x65)) continue;
         np = rd32(o + 0x1c);
         if (0x20 + 4 * np > n) continue;
@@ -893,19 +932,96 @@ static void sf_apply(const uint8_t *acc, int modern)
             for (c = 0; c < 3; c++) d[2 - c] = 255 - ((255 - acc[c]) * t + 127) / 255;
         }
     }
-    log_s("   theme: SF icons "); log_s(modern ? "on " : "off "); log_d(ok); log_s(", failed "); log_d(bad);
+    log_s("   theme: icons "); log_s(sf_set ? "Modern" : "Classic");
+    if (rc) log_s(rc == -1 ? ", the set's Resources/Icons file not readable (yet)" : ", set read failed");
     log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");
 }
 static int sf_is_accent(uint32_t id)
 {
     uint32_t j;
-    for (j = 0; j < SF_NACCENT; j++) if (sf_accent[j] == id) return 1;
+    for (j = 0; sf_set && j < SF_NACCENT; j++) if (sf_accent[j] == id) return 1;
     return 0;
 }
 #else
 static void sf_apply(const uint8_t *acc, int modern) { (void)acc; (void)modern; }
 static int sf_is_accent(uint32_t id) { (void)id; return 0; }
+static const int sf_set = 0;
+static int sf_index(uint32_t id) { (void)id; return -1; }
+static uint32_t sf_file_off(int modern, uint32_t k) { (void)modern; (void)k; return 0; }
 #endif
+
+/* ---- Bitmaps the theme has written: their source pixels are read back from the resource volume
+   (Resources/Theme/Package.bin or an icon set file); the others are themed in place. ---- */
+#define NLIST (sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4)
+#define NWRITTEN 320
+static uint32_t written[NWRITTEN], applied_key[NLIST], applied_sum[NLIST], pkg_first, pkg_len;
+/* a sample of a bitmap's bytes: an apply skips one still holding what it wrote */
+static uint32_t bmap_sum(uint32_t id)
+{
+    uint32_t size, h = 2166136261u, i, step;
+    const uint8_t *p = pkg_find(T_BMAP, id, &size);
+    if (!p || !size) return 0;
+    step = size / 64 ? size / 64 : 1;
+    for (i = 0; i < size; i += step) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+static int nwritten;
+static File *src_pkg, *src_set;          /* open during one apply */
+static uint8_t *src_buf;
+static uint32_t src_cap;
+static uint32_t list_id(uint32_t i)
+{
+    return i < sizeof theme_bmap_chrome / 4 ? theme_bmap_chrome[i]
+         : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
+         : theme_bmap_accent[i - sizeof theme_bmap_chrome / 4 - sizeof theme_bmap_bg / 4];
+}
+static int is_written(uint32_t id) { int i; for (i = 0; i < nwritten; i++) if (written[i] == id) return 1; return 0; }
+static void mark_written(uint32_t id) { if (!is_written(id) && nwritten < NWRITTEN) written[nwritten++] = id; }
+static void forget(uint32_t id)
+{
+    uint32_t i;
+    for (i = 0; i < (uint32_t)nwritten; i++) if (written[i] == id) { written[i] = written[--nwritten]; break; }
+    for (i = 0; i < NLIST; i++) if (list_id(i) == id) applied_key[i] = 0;
+}
+static int read_at(File **fp, const char *path, uint32_t off, uint8_t *d, uint32_t n)
+{
+    uint32_t got = 0;
+    int k;
+    if (!*fp && !(*fp = rsrc_open(path))) return -1;
+    if ((*fp)->vt->seek(*fp, (int64_t)off, 0)) return -1;
+    while (got < n && (k = (*fp)->vt->read(*fp, d + got, (int)(n - got), 2)) > 0) got += k;
+    return got == n ? 0 : -1;
+}
+/* the pixels to theme a bitmap from: the package's own, or read back if written */
+static const uint8_t *bmap_source(uint32_t id, uint32_t *size)
+{
+    static const char pkgfile[] = "Resources/Theme/Package.bin";
+    uint8_t *cur = (uint8_t *)pkg_find(T_BMAP, id, size);
+    uint32_t h[4], off;
+    int k;
+    if (!cur || !is_written(id)) return cur;
+    if (*size > src_cap) {
+        if (src_buf) os_free(src_buf);
+        src_cap = 0;
+        if (!(src_buf = os_malloc(*size))) return 0;
+        src_cap = *size;
+    }
+    if ((k = sf_index(id)) >= 0)
+        return read_at(&src_set, sf_set ? "Resources/Icons/Modern.bin" : "Resources/Icons/Classic.bin", sf_file_off(sf_set, (uint32_t)k), src_buf, *size) ? 0 : src_buf;
+    if (!pkg_len) {                                           /* 'FPKG', first offset from PKG_DATA, length */
+        if (read_at(&src_pkg, pkgfile, 0, (uint8_t *)h, 16) || h[0] != 0x474b5046) return 0;
+        pkg_first = h[1]; pkg_len = h[2];
+    }
+    off = (uint32_t)(cur - (uint8_t *)PKG_DATA);              /* Apple's bitmaps never move */
+    if (off < pkg_first || off + *size > pkg_first + pkg_len) return 0;
+    return read_at(&src_pkg, pkgfile, 16 + off - pkg_first, src_buf, *size) ? 0 : src_buf;
+}
+static void sources_close(void)
+{
+    if (src_pkg) { src_pkg->vt->close(src_pkg); src_pkg->vt->del(src_pkg); src_pkg = 0; }
+    if (src_set) { src_set->vt->close(src_set); src_set->vt->del(src_set); src_set = 0; }
+    if (src_buf) { os_free(src_buf); src_buf = 0; src_cap = 0; }
+}
 
 /* List row separators: 1-pixel views whose colour is copied from 9 static templates in the OS
    data (#DEDEDE, light grey). Dark mode gave white lines between two-line rows; they take the iOS
@@ -923,10 +1039,8 @@ static void theme_separators(int mode)
     }
 }
 
-/* ---- Modern style: the remaining glossy bars go flat, in place. The stock bitmap is saved first
-   (orig_of), so switching back to Classic writes it back (classic_bars). The black status bar (About,
-   USB, Now Playing) keeps light text, so it takes the dark page colour in Dark and near-black in
-   Light; the About band a grey; capacity and progress bar pieces their own average colour. ---- */
+/* ---- Modern style: glossy bars go flat in place (marked written, so Classic reads Apple's back);
+   the black status bar takes the dark page colour, other pieces their own average colour. ---- */
 static const uint32_t modern_mean[37] = {
     0x0dad0abc, 0x0dad0abb, 0x0dad0abd, 0x0dad0ab7, 0x0dad0ab9, 0x0dad0ab8, 0x0dad0aba, 0x0dad0ac5,
     0x0dad0ac4, 0x0dad0ac6, 0x0dad0ac2, 0x0dad0ac1, 0x0dad0ac3, 0x0dad0abf, 0x0dad0abe, 0x0dad0ac0,
@@ -996,12 +1110,13 @@ static void for_each_modern_bar(void (*fn)(uint32_t id))
     for (i = 0; i < 4; i++) fn(single[i]);
     for (i = 0; modern_mean[i]; i++) fn(modern_mean[i]);
 }
-static void save_stock(uint32_t id) { uint32_t size; orig_of(T_BMAP, id, &size); }
+static void save_stock(uint32_t id) { mark_written(id); }
 static void restore_stock(uint32_t id)
 {
-    int i;
-    for (i = 0; i < nsaved; i++)                          /* only what a Modern apply saved, and so changed */
-        if (saved[i].type == T_BMAP && saved[i].id == id) { rsrc_write(T_BMAP, id, saved[i].copy, saved[i].size); return; }
+    uint32_t size;
+    const uint8_t *s;
+    if (!is_written(id)) return;                           /* only what a Modern apply changed */
+    if ((s = bmap_source(id, &size)) && !rsrc_write(T_BMAP, id, s, size)) forget(id);
 }
 static void classic_bars(void) { for_each_modern_bar(restore_stock); }
 static void modern_bars(int mode, const uint8_t *acc)
@@ -1055,9 +1170,6 @@ static void modern_np_layout(int modern)
 
 /* ---- apply ---- */
 int theme_is_applied(int mode, int accent) { return applied_mode == mode && applied_accent == accent; }
-#define BMCACHE 160
-static uint8_t *bmcache[BMCACHE];
-static uint32_t bmcache_key[BMCACHE];
 /* a resource bitmap as currently applied (battery.c draws into two of them); theme_gen counts the
    applies, after which they hold their pristine pixels again */
 int theme_gen;
@@ -1115,26 +1227,22 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     theme_separators(mode);
     if (theme_style) { modern_bars(mode, acc); modern_np_layout(1); }
     else { classic_bars(); modern_np_layout(0); }
-    for (i = 0; i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4; i++) {
+    for (i = 0; i < NLIST; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
-        uint32_t id = cls == 0 ? theme_bmap_chrome[i] : cls == 1 ? theme_bmap_bg[i - sizeof theme_bmap_chrome / 4]
-                    : theme_bmap_accent[i - sizeof theme_bmap_chrome / 4 - sizeof theme_bmap_bg / 4];
+        uint32_t id = list_id(i), key = 0x80000000u | (uint32_t)mode << 16 | (uint32_t)accent << 8 | (uint32_t)theme_style;
         const uint8_t *src;
         uint8_t *d = 0;
         if (theme_style && sf_is_accent(id)) continue;     /* Modern: sf_apply keeps these (accent images) */
-        src = orig_of(T_BMAP, id, &size);
-        uint32_t key = 0x80000000u | (uint32_t)mode << 16 | (uint32_t)accent << 8 | (uint32_t)theme_style;
-        if (!src) { bad++; continue; }
-        /* the themed copy of each bitmap is kept: the second pass at UI init (the OS reloads the
-           resources after the library load) and repeated applies only write it back */
-        if (i < BMCACHE && bmcache_key[i] == key) d = bmcache[i];
-        else if (mode || accent || cls == 2 || theme_style) {
-            d = bmap_themed(src, size, cls, acc, mode, id);
-            if (i < BMCACHE) { if (bmcache[i]) os_free(bmcache[i]); bmcache[i] = d; bmcache_key[i] = key; }
-        } else if (i < BMCACHE) { if (bmcache[i]) os_free(bmcache[i]); bmcache[i] = 0; bmcache_key[i] = key; }
-        if (rsrc_write(T_BMAP, id, d ? d : src, size)) bad++; else done++;
-        if (d && i >= BMCACHE) os_free(d);
+        /* the second pass at UI init and repeated applies leave a bitmap that still holds these pixels */
+        if (applied_key[i] == key && applied_sum[i] == bmap_sum(id)) { done++; continue; }
+        if (!(src = bmap_source(id, &size))) { bad++; continue; }
+        if (mode || accent || cls == 2 || theme_style) d = bmap_themed(src, size, cls, acc, mode, id);
+        if ((d || is_written(id)) && rsrc_write(T_BMAP, id, d ? d : src, size)) { bad++; if (d) os_free(d); continue; }
+        if (d) { os_free(d); mark_written(id); } else forget(id);
+        applied_key[i] = key; applied_sum[i] = bmap_sum(id);
+        done++;
     }
+    sources_close();
     for (i = 0; i < sizeof theme_colr / 4; i++) {
         const uint8_t *src = orig_of(T_COLR, theme_colr[i], &size);
         if (!src || size < 4) { bad++; continue; }
@@ -1201,25 +1309,22 @@ __attribute__((naked, section(".text.entry"), used)) void e_cover_angle(void)
         "1: .word theme_style\n 2: .word 0x00ab0000\n 3: .word 0x00b40000\n");
 }
 
-/* Modern style font: the OS asks 0x080692f8(kind, &volume, path) for its fonts folder (kind 1:
- * volume 4, the firmware's resource volume, "Resources/Fonts"; it scans it, then opens fonts by
- * name). In Modern, when FLAC\Fonts on the music volume (0) holds the set (SF Compact standing in
- * for Helvetica, tools/sf/gen_font.py, plus copies of the other fonts), that folder is used instead.
- * Without the folder, or in Classic, the stock answer. Entry of 0x080692f8 branches here. */
+/* fonts folder (entry of 0x080692f8, kind 1): Resources/ModernFonts on volume 4 in Modern style
+   when the volume has it, else Apple's Resources/Fonts */
 #define os_path_assign ((void (*)(void *, const char *))0x0826e428)
 __attribute__((used, section(".text.entry"))) void e_font_dir(int kind, int8_t *vol, void *path)
 {
     CRUMB();
     static int have = -1;
-    int size;
     if (kind != 1) return;
     { void ra_start(void); ra_start(); }    /* the font scan and glyph pass read in 128 KB blocks until the first frame */
     if (have < 0) {
-        have = file_read("FLAC\\Fonts\\Helvetica.ttf", 0, 0, &size) >= 0 && size > 0;
-        log_s("   fonts: "); log_s(have && theme_style ? "FLAC\\Fonts (Modern)" : "Resources/Fonts");
-        log_s(", style "); log_d(theme_style); log_c('\n');
+        File *f = rsrc_open("Resources/ModernFonts/Helvetica.ttf");
+        have = f && file_size(f) > 0;
+        if (f) f->vt->del(f);
+        log_s("   fonts: "); log_s(have && theme_style ? "Resources/ModernFonts" : "Resources/Fonts");
+        log_s(", style "); log_d(theme_style); log_s(have ? "\n" : ", no Resources/ModernFonts\n");
     }
-    if (have && theme_style) { *vol = 0; os_path_assign(path, "FLAC\\Fonts"); return; }
     *vol = 4;
-    os_path_assign(path, "Resources/Fonts");
+    os_path_assign(path, have && theme_style ? "Resources/ModernFonts" : "Resources/Fonts");
 }

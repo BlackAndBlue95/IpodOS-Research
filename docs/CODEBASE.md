@@ -80,8 +80,8 @@ sync → `os_libload` → health line → art database → headset plug events �
 - **Boot reads (`runtime/uifast.c`).** The device read `0x082bb36c` (drive, lba, buf, count) is
   hooked from app init to the first frame (read time for the log). From the font scan (`e_font_dir`)
   on, reads on drives 0 and 1 are served from 128 KB blocks read once: the boot glyph pass reads the
-  CJK fallback fonts (CJK11/CJK16) in ~440 scattered 8 KB pieces, with stock or `FLAC\Fonts` fonts
-  alike; 38 block reads cover them. `0x082bb36c` counts 512-byte sectors on every drive, whatever the
+  CJK fallback fonts (CJK11/CJK16) in ~440 scattered 8 KB pieces, with `Resources/Fonts` or
+  `Resources/ModernFonts` alike; 38 block reads cover them. `0x082bb36c` counts 512-byte sectors on every drive, whatever the
   volume's sector size: drive → object `0x08ad1794[d]` (partition start `+0x0c`) → device (`+4`, vt
   `0x089a7378`) → `0x0828c08c`, which shifts by 9 and splits into the drive's blocks (`+0x1c` bytes,
   `+0x20` sectors each, bounce block `+0x50`). Only blocks inside a volume's data area
@@ -264,9 +264,25 @@ added with a warning. `tools/qemu/videotest.py` checks playback end to end in th
   `0x081e1444` runs it after switching the strings) makes every visible view re-read its resources
   and update in place, so the screens on the stack keep their place. Then the stored-colour walk
   (text views `+0xf4`, marquee tints) and a repaint of every layer through slot `0x70`. Modern's
-  flattened bars are restored from saved stock copies and its Now Playing layout words put back in
+  flattened bars get Apple's pixels back and its Now Playing layout words are put back in
   Classic. Only the font folder (`e_font_dir`, read when the fonts are scanned at boot) follows at
   the next start.
+- Assets live on Apple's resource volume (`rsrc`, the OS's volume 4, section 11) beside Apple's
+  own, never in region E: `Resources/Icons/Classic.bin` and `Modern.bin` (the 266 SF-replaced
+  icons, `tools/sf/icon_sets.py`), `Resources/ModernFonts` (Apple's fonts with the SF Compact
+  stand-ins for Helvetica) and `Resources/Theme/Package.bin` (Apple's bitmap data, 3.2 MB).
+  `rsrc_open` (`osfile.c`) opens them as File::Open does for `Resources/Games/`: a stream on
+  volume 4.
+- Icons: only the active set is in RAM, in the package's own bytes: Classic where Apple put it,
+  Modern packed into the same 1.74 MB (`sf_tab` column 3). `sf_apply` reads the other set's file
+  into place on a style change and repoints the index (about 45 ms in the emulator). The first
+  apply at boot runs before `rsrc` is mounted, so a Modern iPod gets its icons at the UI-init apply,
+  before any screen is built.
+- Recolouring needs no copies in RAM: a bitmap the theme or `modern_bars` has not written still
+  holds its source's pixels in the package, so it is themed from there; a written one is read back
+  (`bmap_source`) from `Package.bin`, or from the set file for an SF icon. Only a live switch reads.
+  `applied_key` per bitmap lets the UI-init apply skip what already holds its pixels. Colours
+  (`COLR`, 4 bytes) keep heap copies.
 - Charging screen (Modern): the OS builds the battery from slices sharing one frame (body rows
   22..96, then a reflection): `ChargingMode_Image_{Empty,Green}_CapLeft`, `_Middle` repeated,
   `Green_Middle_Cap` where the charge ends, `_CapRight` with the nub. `gen_sficons.py` (`chg`
@@ -338,8 +354,17 @@ log". Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, optiona
 ## 11. Firmware partition and self-update (`ospatch/fwpart.py`, `runtime/update.c`)
 
 - Partition (type 0x3f, LBA 63): `]ih[` at +0x100, directory at +0x5000 (12 × 40-byte entries),
-  section data at devOff + 0x1000, checksum = 32-bit byte sum. Our image is the `osfl` section at
-  0x5944000; Apple's `osos` stays so MENU still boots stock.
+  section data at devOff + 0x1000, checksum = 32-bit byte sum. Sections in order: `rsrc`, `osos`,
+  `aupd`, `hash` (empty), our `osfl`; each starts where the previous one's data ends. Apple's
+  `osos` stays so MENU still boots stock. The bootloader, the OS and `update.c` find every section
+  through the directory.
+- `rsrc` is a FAT16 volume at devOff + 0x1000 + entryOff (0xe00), mounted by the OS as volume 4
+  (`0x080bb914`, tag `rsrc`). Its `len` must be whole 4096-byte blocks (`0x0806eb80` refuses
+  others, and the OS then has no fonts). `fwpart.py rsrc PARTITION.bin TREE OUT.bin` adds TREE's
+  files (`tools/sf/rsrc_tree.py` assembles it) to Apple's, growing the volume in place
+  (`rsrcvol.py`: Apple's files keep their clusters) and moving the later sections up by the growth.
+  It is a one-time rewrite of the whole partition (dump, `fwpart.py rsrc`, `fwpart.py add`, `dd`),
+  then images go on through `/osos-update.dec` as before.
 - Self-update: copy a new image to `/osos-update.dec`; at boot it is validated, written in 64 KB
   chunks through the block device class, read back and compared, the directory entry updated, the
   file renamed to `osos-update.done`, then a watchdog restart. A marker (`FLAC\update.try`) stops a

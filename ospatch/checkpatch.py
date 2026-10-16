@@ -80,6 +80,13 @@ if full:
     br(0x0828a96c, 'e_flac_open')
     for at in (0x0804647c, 0x080464b0, 0x080464cc, 0x08092e40, 0x080931c0, 0x080c70b8, 0x08299628): br(at, 'e_art_find')
     for at in (0x081aa97c, 0x08264ab4, 0x08264b78, 0x08264d20, 0x082bd214): br(at, 'e_art_load')
+    if dw(0x08109d88) == 0xeb028b0a and dw(0x0810b444) == 0xeb02855b:
+        check(True, 'menu art pane lists stock (no --art-pane)')
+        check(dw(0x08224c18) == 0xe59f102c, 'Now Playing row pane state stock (no --art-pane)')
+    else:
+        for at in (0x08109d88, 0x0810b444): br(at, 'e_showcase')
+        br(0x08224c18, 'e_np_state')
+    br(0x08045540, 'hk_imgid')
     for at in (0x082d6314, 0x082d9b14): br(at, 'e_lfn_batch')
     br(0x080da098, 'e_loc_db')
     for at in (0x0805f738, 0x080d448c): br(at, 'e_loc_set')

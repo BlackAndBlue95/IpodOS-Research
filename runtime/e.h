@@ -31,6 +31,7 @@ int dir_list(const char *dir, int (*cb)(void *ctx, const char *name, int is_dir,
 uint32_t dos_mktime(uint16_t date, uint16_t time);
 File *file_open(const char *path);          /* open for reading, NULL if not */
 int file_size(File *f);
+File *rsrc_open(const char *path);           /* on Apple's resource volume (rsrc), NULL if not there */
 
 /* ossync.c */
 struct sync_album {                                  /* an album folder as the sync scanned it */

@@ -155,12 +155,20 @@ static void __attribute__((used)) pb_glyphs_now(uint8_t *b)
     log_c('\n');
     log_s("   ui: first "); log_d((int)rd32(b + 0x114)); log_s(" screens and their glyphs built at "); log_d((int)(TIMER_E / 1000)); log_s(" ms, the rest in the background\n");
 }
+uint32_t first_frame_us;                 /* libload.c */
+static void __attribute__((used)) pb_tick_c(void)
+{
+    void art_showcase_late(void);
+    if (first_frame_us && TIMER_E - first_frame_us > 500000) art_showcase_late();   /* menu art pane covers (art.c) */
+}
 __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
 {
     __asm__ volatile(
         "cmp r5, #0\n"
-        "ldrne pc, 2f\n"                 /* incremental: one screen per tick */
-        "ldr ip, 4f\n ldr ip, [ip]\n"     /* blocking: keep going, unless the boot cut-off is reached */
+        "beq 7f\n"                       /* incremental: one screen per tick */
+        "push {r3, lr}\n ldr ip, 8f\n mov lr, pc\n bx ip\n pop {r3, lr}\n"
+        "ldr pc, 2f\n"
+        "7: ldr ip, 4f\n ldr ip, [ip]\n"  /* blocking: keep going, unless the boot cut-off is reached */
         "cmp ip, #0\n"
         "ldreq pc, 1f\n"
         "ldr r0, 6f\n ldr r0, [r0]\n cmp r0, #0\n ldreq pc, 1f\n"
@@ -174,7 +182,8 @@ __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)
         "2: .word 0x081aeb24\n"
         "4: .word pb_k\n"
         "5: .word pb_glyphs_now\n"
-        "6: .word pb_lazy\n");
+        "6: .word pb_lazy\n"
+        "8: .word pb_tick_c\n");
 }
 
 /* Starting from state 0 the pre-build forces itself blocking (`moveq r5, #0` at 0x081ae9d0), so
@@ -227,8 +236,12 @@ __attribute__((naked, section(".text.entry"), used)) void e_pb_state0_done(void)
  * screen's views were laid out before the glyphs were ready, so once, at the first completion,
  * the UI is reloaded as after a theme switch (0x0817cd30(app, 1)), which rebuilds the home screen. */
 static int pb_refreshed;
+int pb_finished;                         /* the background pre-build has ended */
 static void __attribute__((used)) pb_done_c(void)
 {
+    void art_showcase_late(void);
+    pb_finished = 1;
+    art_showcase_late();                 /* menu art pane covers, if no tick started them (art.c) */
     log_s("   ui: screen pre-build done at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     if (pb_lazy && !pb_refreshed && !pb_k) {
         pb_refreshed = 1;

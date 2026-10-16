@@ -6,6 +6,8 @@ Based on davidmonterocrespo24/qemu-ipod-classic (6G). `ipod-classic-7g.patch` ad
 - ATA interrupt latched in bit 2 as well as bit 0 (the 7G driver waits with mask 4).
 - A SHA-1 engine model at 0x38000000 (Rockbox's register usage). 2.0.4's iTunesDB check does not use
   it, so `boot.sh` bypasses that check in its copy of the image.
+- Display layers composed front to back with alpha by default, so the menu sits over the main menu's
+  art pane as on the device (`DISP_ALPHA=0`: the old back-to-front opaque order).
 
 Build: clone the fork into `build/qemu/src`, apply the patch, get glib/pixman/openssl/sdl2 with
 micromamba into `build/qemu/deps`, then `../configure --target-list=arm-softmmu --enable-sdl` and
@@ -46,8 +48,15 @@ Deterministic screen checks (tourcmp drifts once navigation timing differs betwe
 
 `screens.py` waits for the first frame, plays the keys (`waitN` sleeps, `shot` saves a numbered PNG)
 and prints the run's first-frame, glyph-pass, pre-build, fbdmg and CRASH lines (`GREP=a,b` adds more).
-`PMUCHARGER=1` keeps the emulated battery from going critical on long tours. Test disks: `EF.img` (stock
-fonts), `EF-fonts.img` (with `FLAC\Fonts`), `EF-classic.img` (`style=classic`).
+`PMUCHARGER=1` reports USB power. Test disks: `EF.img` (stock fonts), `EF-fonts.img` (`style=modern`),
+`EF-classic.img` (`style=classic`). Their firmware partition (block 8, 192 MB) needs the grown `rsrc`
+for Modern's icons and fonts (docs/CODEBASE.md section 11): `tools/sf/rsrc_tree.py PART.bin sficons
+OSOS.dec`, `ospatch/fwpart.py rsrc PART.bin sficons/rsrc NEW.bin`, then write NEW.bin at byte 0x8000
+of a `cp -c` clone of the disk.
+
+The PMU model (`ipod_classic_pmu.c`) reads BVMCTL (0x18) bit 0 as clear: as plain storage it kept
+whatever Apple's writes left there, its LowBattDebounceTask took that for a flat battery during
+navigation, showed "Connect to Power" and froze in the power-down (polling 0x39A00000, not modelled).
 
 Instruction and cache profile (`kprof.c`, a TCG plugin). Counts every executed
 instruction per translation block, the IRQ-handler share, memory traffic by region, and misses in a 16 KB

@@ -36,6 +36,8 @@ Not applied in v18: v17's PCM reader kill at 0x081ff0ac and the stub over 0x0827
 | 0x0828a96c (WAV Open) | bl 0x081ea554 File ctor | `e_flac_open` |
 | 0x0804647c, 0x080464b0, 0x080464cc, 0x08092e40, 0x080931c0, 0x080c70b8, 0x08299628 | 0x080457e4 FindImageForTrack | `e_art_find` |
 | 0x081aa97c, 0x08264ab4, 0x08264b78, 0x08264d20, 0x082bd214 | 0x080f32ec ArtworkThumb::Load | `e_art_load` |
+| 0x08109d88 (library ready), 0x0810b444 (reload) | bl 0x081ac9b8 main menu art pane: sample image ids per media kind | `e_showcase` (`--art-pane` only): each album folder with art adds its image id to the music list first; with `--ui-lazy` the lists are rebuilt 0.5 s after the first frame and the pane's notice 0x7f82 redoes the menu hilite |
+| 0x08224c18 (Now Playing row hilite 0x08224c10) | ldr r1, =NoArtNowPlayingHilited | `bl e_np_state` (`--art-pane` only) | with art (0x081eca94: playing song's image id) the album goes in the pane's unused category 2 (twice for a FLAC album, an alias id, so it pans) and the row gets MediaContentHilited, as Music |
 | 0x080da098 | bl 0x080dc410 (DB location into record) | `e_loc_db` |
 | 0x0805f738, 0x080d448c | bl 0x0804fde0 (path into record) | `e_loc_set` |
 | 0x08048288, 0x080cc33c, 0x080d7fa0, 0x080d7fdc, 0x080da17c | bl 0x080605c8 (record to path) | `e_loc_path` |
@@ -55,6 +57,7 @@ Not applied in v18: v17's PCM reader kill at 0x081ff0ac and the stub over 0x0827
 | 0x0826d8e0 stream seek | 0xe92d43f8 (0xe1a04000) | `hk_seek` | blob runtime hook |
 | 0x0826d5fc stream read | 0xe92d47f0 (0xe24dd020) | `hk_read` | blob runtime hook |
 | 0x0828a5ac WAV parser | 0xe92d43f0 (0xe1a04000) | `hk_parse` | blob runtime hook |
+| 0x08045540 artwork image by id | 0xe92d41f0 (0xe1a05000) | `hk_imgid` | new: a FLAC album image id (0x7f000000 + folder) gets its image made on first use |
 | 0x0806aa08 volume unmount | 0xe92d403e (0xe1a01000) | `hk_unmount` | new: fatdir's raw device handle closed first, or at the end of a running session |
 
 ## Data

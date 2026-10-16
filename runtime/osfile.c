@@ -46,6 +46,26 @@ File *file_open(const char *path)
 }
 int file_size(File *f) { int a = f->vt->s6(f), b = f->vt->s7(f); return a > b ? a : b; }
 
+/* A file on Apple's resource volume (rsrc, volume 4; paths such as "Resources/Icons/x.bin"):
+   File::Open (0x081ea328) does this for Resources/Games/ paths, a stream over volume 4 */
+#define os_stream_ctor ((void *(*)(void *, const char *, int, int, int, int, int))0x0826deec)
+File *rsrc_open(const char *path)
+{
+    void *m = os_malloc(0x114), *s;
+    File *f;
+    if (!m) return 0;
+    if (!(f = os_file_ctor(m, path, 1024, 1))) { os_free(m); return 0; }
+    if (!(s = os_malloc(0x54))) { f->vt->del(f); return 0; }
+    s = os_stream_ctor(s, (const char *)f + 12, 1, 4, 1024, 1, 0);
+    if (!s || ((int32_t *)s)[6] == -1) {
+        if (s) ((void (**)(void *))*(void ***)s)[1](s);
+        f->vt->del(f);
+        return 0;
+    }
+    ((void **)f)[2] = s;
+    return f;
+}
+
 typedef int (*vslot1)(void *, struct os_str *);
 typedef int (*vslot2)(void *, struct os_str *, struct os_str *);
 

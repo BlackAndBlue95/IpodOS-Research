@@ -29,6 +29,7 @@ ap.add_argument('--ui-fast', action='store_true', help='UI start-up fixes (uifas
 ap.add_argument('--ui-lazy', action='store_true', help='screens built in the background after the first frame')
 ap.add_argument('--games-defer', action='store_true', help='skip the games catalog warm-up at boot')
 ap.add_argument('--fb-damage', action='store_true', help='screen copy-back after a buffer swap limited to the drawn rects (fbcopy.c)')
+ap.add_argument('--art-pane', action='store_true', help='main menu art pane shows FLAC album covers (art.c e_showcase)')
 ap.add_argument('--heap-cache', action='store_true', help='small-block cache in front of os_malloc/os_free (heapcache.c)')
 ap.add_argument('--fast-prims', action='store_true', help='direct paths for dynamic-array fetches and bitset scans (prims.c)')
 ap.add_argument('--ft-raster', action='store_true', help="FreeType 2.14's anti-aliased rasterizer for the smooth renderers (ft/ftgrays_e.c)")
@@ -129,6 +130,10 @@ if a.hooks == 'all':
         retarget(at, 0x080457e4, sym['e_art_find'])            # artwork lookup
     for at in (0x081aa97c, 0x08264ab4, 0x08264b78, 0x08264d20, 0x082bd214):
         retarget(at, 0x080f32ec, sym['e_art_load'])            # artwork load
+    if a.art_pane:
+        for at in (0x08109d88, 0x0810b444):
+            retarget(at, 0x081ac9b8, sym['e_showcase'])        # main menu art pane's id lists: FLAC album images added
+        wr(0x08224c18, 0xeb000000 | (((sym['e_np_state'] - 0x08224c18 - 8) >> 2) & 0xffffff), 0xe59f102c)   # Now Playing row's pane state -> e_np_state (r1)
     for at in (0x082d6314, 0x082d9b14): retarget(at, 0x082d95dc, sym['e_lfn_batch'])   # FAT long names across sectors
     for at in (0x08163a6c, 0x08137dc0): retarget(at, 0x082c5f14, sym['e_art_clear'])   # white clear: album view, main menu art pane
     retarget(0x08270adc, 0x083c89b0, sym['e_refl_verts'])     # cover reflection corners -> e_refl_verts: collapsed in Modern style
@@ -155,6 +160,7 @@ if a.hooks == 'all':
     entry_hook(0x0826d8e0, 0xe92d43f8, 0xe1a04000, sym['hk_seek'])
     entry_hook(0x0826d5fc, 0xe92d47f0, 0xe24dd020, sym['hk_read'])
     entry_hook(0x0828a5ac, 0xe92d43f0, 0xe1a04000, sym['hk_parse'])
+    entry_hook(0x08045540, 0xe92d41f0, 0xe1a05000, sym['hk_imgid'])   # image by id: FLAC album images made on first use
     # FLAC decoder selector literal (IRAM)
     wr(IRAM_BASE + 0x3824, sym['flac_select_shim'], 0x081a4900)
     # theme: literals pointing at the OS grey globals (white, #AA, #7F, #55, black) point at region E's

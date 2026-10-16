@@ -29,8 +29,10 @@ static void mikey_events(void)
 void libload_first_frame(void)
 {
     static int seen;
+    extern uint32_t first_frame_us;
     if (seen) return;
     seen = 1;
+    first_frame_us = TIMER_E;
     crumb_state(2);                       /* DIAG */
     log_s("   t: first frame at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
     { extern uint32_t font_skipped; if (font_skipped) { log_s("   ui: "); log_d((int)font_skipped); log_s(" text elements skipped, font not available\n"); } }

@@ -122,3 +122,50 @@ index 7d00421..7247c14 100644
      }
      ipod_classic_ata_update_irq(s);
  }
+diff --git a/hw/arm/ipod_classic/ipod_classic_disp.c b/hw/arm/ipod_classic/ipod_classic_disp.c
+index 02a2c08..85d73f0 100644
+--- a/hw/arm/ipod_classic/ipod_classic_disp.c
++++ b/hw/arm/ipod_classic/ipod_classic_disp.c
+@@ -222,10 +222,11 @@ static bool disp_alpha_on(void)
+ {
+     static int on = -1;
+     if (on < 0) {
++        /* on by default: the UI layer over the art pane, as on the device; DISP_ALPHA=0: old order */
+         const char *e = getenv("DISP_ALPHA");
+-        on = (e && *e && *e != '0') ? 1 : 0;
+-        if (on) {
+-            fprintf(stderr, "DISP_ALPHA: capas compuestas de delante a atras con alfa\n");
++        on = (e && *e == '0') ? 0 : 1;
++        if (!on) {
++            fprintf(stderr, "DISP_ALPHA=0: layers drawn back to front, opaque\n");
+         }
+     }
+     return on == 1;
+diff --git a/hw/arm/ipod_classic/ipod_classic_pmu.c b/hw/arm/ipod_classic/ipod_classic_pmu.c
+index fd9786b..777fce9 100644
+--- a/hw/arm/ipod_classic/ipod_classic_pmu.c
++++ b/hw/arm/ipod_classic/ipod_classic_pmu.c
+@@ -125,6 +125,10 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
+          */
+         val = PCF5063X_OOCSTAT_HEALTHY;
+         break;
++    case PCF5063X_REG_BVMCTL:
++        /* BVMLOW (bit 0) is the comparator's read-only output: the modelled battery is never low */
++        val &= ~PCF5063X_BVMCTL_BVMLOW;
++        break;
+     case PCF5063X_REG_MBCS1:
+         /*
+          * Main-battery-charger status. The stale value reads as a spurious
+diff --git a/include/hw/arm/ipod_classic/ipod_classic_pmu.h b/include/hw/arm/ipod_classic/ipod_classic_pmu.h
+index dd00bd7..d1f87f7 100644
+--- a/include/hw/arm/ipod_classic/ipod_classic_pmu.h
++++ b/include/hw/arm/ipod_classic/ipod_classic_pmu.h
+@@ -38,6 +38,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
+ #define PCF5063X_REG_OOCSHDWN  0x0c
+ #define PCF5063X_REG_OOCSTAT   0x12
+ #define PCF5063X_REG_GPIOCTL   0x13
++#define PCF5063X_REG_BVMCTL    0x18
++#define PCF5063X_BVMCTL_BVMLOW 0x01   /* read-only: battery below the BVMLVL threshold */
+ #define PCF5063X_REG_DCDCSTAT  0x41
+ #define PCF5063X_REG_LDOSTAT   0x42
+ #define PCF5063X_REG_MBCS1     0x4b

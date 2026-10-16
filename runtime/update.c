@@ -9,7 +9,6 @@
 #define UPD_TRY    "FLAC\\update.try"
 #define FW_SIZE    0x0c000000u
 #define FW_DIR     0x5000u
-#define FW_OSFL    0x5944000u            /* fwpart.py OSFL_OFF */
 #define CHUNK      0x10000u
 
 /* Block device class at 0x08270400, the one the USB mass-storage LUN wraps. ctor(obj, 0, 0)
@@ -85,7 +84,7 @@ void update_check(void)
 {
     uint8_t hdr[0x810], *buf = 0, *buf2 = 0;
     int size, n, rc, i;
-    uint32_t ss, nsect, part = 0, psize = 0, data_lba, dir_lba, dir_off, nchunks, sum = 0, body, k;
+    uint32_t ss, nsect, part = 0, psize = 0, data_lba, dir_lba, dir_off, nchunks, sum = 0, body, k, osfl_off;
     Dev *d = 0;
     File *f = 0;
     void *m = 0;
@@ -153,18 +152,24 @@ void update_check(void)
     if ((rc = xfer(d, 0, buf2, part, 1))) { fail("firmware header read", rc); goto out; }
     if (!(buf2[0x100] == ']' && buf2[0x101] == 'i' && buf2[0x102] == 'h' && buf2[0x103] == '[')) { fail("no ]ih[ header at the firmware partition: reads are not trustworthy", -18); goto out; }
     log_s("   update: read self-test passed (MBR valid, ]ih[ at sector "); log_d((int)part); log_s(")\n"); log_flush();
-    data_lba = part + (FW_OSFL + 0x1000) / ss;
     dir_lba = part + FW_DIR / ss; dir_off = FW_DIR % ss;
     nchunks = ((uint32_t)size + CHUNK - 1) / CHUNK;
-    if (data_lba + nchunks * (CHUNK / ss) > part + psize) { fail("image too big for the slot", -15); goto out; }
-    /* already installed (same length and checksum as the osfl entry): the file is removed, nothing is written */
     if ((rc = xfer(d, 0, buf, dir_lba, 1))) { fail("directory read", rc); goto out; }
     for (i = 0; i < 12; i++) {
         uint8_t *e = buf + dir_off + 40 * i;
         if (e[4] == 'l' && e[5] == 'f' && e[6] == 's' && e[7] == 'o') break;
     }
     if (i == 12) { fail("no osfl entry in the directory", -17); goto out; }
-    if (le32(buf + dir_off + 40 * i + 0x0c) != FW_OSFL) { fail("osfl entry offset differs", (int)le32(buf + dir_off + 40 * i + 0x0c)); goto out; }
+    /* osfl is where the directory puts it: past every other section, inside the partition */
+    osfl_off = le32(buf + dir_off + 40 * i + 0x0c);
+    for (k = 0; k < 12; k++) {
+        const uint8_t *e = buf + dir_off + 40 * k;
+        if (k == i || le32(e) == 0 || le32(e) == 0xffffffffu) continue;
+        if (le32(e + 0x0c) + 0x1000 + le32(e + 0x10) > osfl_off) { fail("osfl entry overlaps another section", (int)k); goto out; }
+    }
+    if ((osfl_off & 0xfff) || osfl_off + 0x1000 + nchunks * CHUNK > FW_SIZE) { fail("image too big for the slot", -15); goto out; }
+    data_lba = part + (osfl_off + 0x1000) / ss;
+    /* already installed (same length and checksum as the osfl entry): the file is removed, nothing is written */
     if (le32(buf + dir_off + 40 * i + 0x10) == (uint32_t)size) {
         uint32_t want_sum = le32(buf + dir_off + 40 * i + 0x1c), fsum = 0, left = (uint32_t)size, j;
         if (!(f = os_file_ctor(m, UPD_FILE, 1024, 1)) || f->vt->open(f)) { fail("open", -16); goto out; }
@@ -227,7 +232,7 @@ void update_check(void)
         if (e[4] == 'l' && e[5] == 'f' && e[6] == 's' && e[7] == 'o') break;
     }
     if (i == 12) { fail("no osfl entry in the directory", -17); goto out; }
-    if (le32(buf + dir_off + 40 * i + 0x0c) != FW_OSFL) { fail("osfl entry offset differs", (int)le32(buf + dir_off + 40 * i + 0x0c)); goto out; }
+    if (le32(buf + dir_off + 40 * i + 0x0c) != osfl_off) { fail("osfl entry offset differs", (int)le32(buf + dir_off + 40 * i + 0x0c)); goto out; }
     st32(buf + dir_off + 40 * i + 0x10, (uint32_t)size);
     st32(buf + dir_off + 40 * i + 0x1c, sum);
     if ((rc = xfer(d, 1, buf, dir_lba, 1))) { fail("directory write", rc); goto out; }
