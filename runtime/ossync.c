@@ -285,7 +285,7 @@ void ls_status(const char *msg)
 {
     boost_hold(10000);                 /* full speed while the sync works */
     log_s("   sync: "); log_s(msg); log_c('\n');
-    { void bootscreen_line(int, const char *); bootscreen_line(1, msg); }   /* at boot only (updscreen.c) */
+    { void bootscreen_status(const char *); bootscreen_status(msg); }   /* at boot only (updscreen.c) */
 }
 
 /* ---- time ---- */

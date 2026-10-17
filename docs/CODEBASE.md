@@ -362,9 +362,11 @@ Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`
 ### Boot screen
 
 During the library load at boot the LCD still belongs to the bootloader's set-up (Apple's LCD init
-comes after it), so `updscreen.c` draws two lines of status text there (5x7 capitals, 2x) through
-the same interface as the update bar: the stage (`stage()` in libload.c) and the sync's progress
-(`ls_status`). Drawing stops before Apple's LCD init; nothing is drawn after USB sessions.
+comes after it), so `updscreen.c` prints a console there through the same interface as the update
+bar: timestamped lines below the bootloader's own (5x7 font on its 6x8 grid, from y 64), one per
+stage (`stage()` in libload.c), the sync's progress rewriting its row (`bootscreen_status` from
+`ls_status`), its summary, the track count and update errors. Drawing stops before Apple's LCD
+init; nothing is drawn after USB sessions.
 
 ## 10. Power and hibernate (`runtime/power.c`)
 
@@ -404,6 +406,14 @@ the same interface as the update bar: the stage (`stage()` in libload.c) and the
   chunks through the block device class, read back and compared, the directory entry updated, the
   file renamed to `osos-update.done`, then a watchdog restart. A marker (`FLAC\update.try`) stops a
   second attempt after a crash.
+- The image carries its own check: mkpatch18.py stores `ESUM` and the byte sum of the body at
+  header offset 0x7f8. The updater reads the whole file and compares before touching the partition,
+  and sums again during the copy; a mismatch at the end leaves the section invalid, so the
+  bootloader boots `/osos-v18.dec`. On the device a read once returned one cluster for every later
+  one, and the old updater installed that. Images without `ESUM` are refused (install them by `dd`).
+- During an update `kfix_stock(1)` (kfix.c) turns every kernel speedup off at run time: the
+  D-cache, heap-cache and array hooks fall through to Apple's code, `e_mdelay` spins, and the libc
+  veneers point back at Apple's IRAM routines. The FAT allocator hooks stay on (section 9).
 - Block device class `0x08270400`: synchronous transfers are **vt[4] = read, vt[0] = write** (fifth
   argument 0). Swapping them once overwrote the partition table. DMA needs the D-cache cleaned
   before writes and cleaned+invalidated around reads. A direction probe on the last sector runs

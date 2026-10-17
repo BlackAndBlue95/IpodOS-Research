@@ -6,12 +6,32 @@
 #define RTXC_TASK    (*(volatile uint32_t *)0x2200acf4)     /* running TCB; 0 in the image until the kernel sets it */
 #define IRQ_NEST     (*(volatile uint8_t *)0x22008a50)      /* IRQ entry nesting count */
 
+/* 1: every kernel speedup in this file, heapcache.c and prims.c runs Apple's own code (the self-update
+   reads and writes the OS this way); kfix_stock() switches it */
+volatile uint32_t kstock;
+extern uint32_t kfix_libc[];
+/* --fast-libc veneer literals and the IRAM offsets of Apple's routines (mkpatch18.py LIBC_VENEERS) */
+static const uint32_t libc_veneers[][2] = { { 0x0802cedc, 0x020 }, { 0x0802cee4, 0x27c }, { 0x0802ceec, 0x2d8 }, { 0x0802cef4, 0x2d4 },
+                                            { 0x0802cefc, 0x020 }, { 0x0802cf04, 0x0d4 }, { 0x0802cf24, 0x188 }, { 0x0802cf2c, 0x0d4 },
+                                            { 0x0802d09c, 0x1f4 } };
+void kfix_stock(int on)
+{
+    void hc_stock(void);
+    uint32_t i;
+    kstock = on;
+    if (on) hc_stock();                  /* blocks the heap cache holds go back to Apple's heap */
+    if (kfix_libc[0])                    /* the veneers: Apple's IRAM routines, or the copy here */
+        for (i = 0; i < sizeof libc_veneers / sizeof *libc_veneers; i++)
+            *(volatile uint32_t *)libc_veneers[i][0] = on ? 0x22000000u + libc_veneers[i][1] : (uint32_t)kfix_libc + libc_veneers[i][1] - 0x20;
+}
+
 /* --sleep-delays: mdelay veneer 0x0802cf18. From the audited call sites below (codec power-up/down,
    library load) a task with interrupts on sleeps instead of spinning; other callers keep the spin. */
 static const uint32_t mdelay_sleepers[] = { 0x0809f410, 0x0809f4bc, 0x0806dd70 };   /* return addresses */
 E_ENTRY int e_mdelay(uint32_t ms)
 {
     uint32_t cpsr, ra = (uint32_t)__builtin_return_address(0), i;
+    if (kstock) return os_mdelay(ms);
     __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr));
     for (i = 0; i < sizeof mdelay_sleepers / 4 && mdelay_sleepers[i] != ra; i++);
     if (i == sizeof mdelay_sleepers / 4 || ms < 2 || ms > 10000 || (cpsr & 0x9f) != 0x13 || IRQ_NEST || !RTXC_TASK)
@@ -29,25 +49,31 @@ uint32_t kfix_libc[0x2f8 / 4];
 __attribute__((naked, section(".text.entry"), used)) void hk_dc_cinv(void)
 {
     __asm__ volatile(
+        "ldr ip, 8f\n ldr ip, [ip]\n cmp ip, #0\n bne 7f\n"  /* kstock: Apple's routine */
         "tst r0, #0x80000000\n bxne lr\n"                  /* the uncached alias, skipped as Apple does */
         "cmp r1, #0\n bxeq lr\n cmp r1, #0x8000\n bhs 2f\n add r1, r0, r1\n"
         "1: bic r2, r0, #31\n mcr p15, 0, r2, c7, c14, 1\n add r0, r0, #32\n cmp r0, r1\n blo 1b\n b 3f\n"
         "2: mrc p15, 0, r15, c7, c14, 3\n bne 2b\n"        /* test, clean and invalidate the whole D-cache */
-        "3: mov r0, #0\n mcr p15, 0, r0, c7, c10, 4\n bx lr\n");
+        "3: mov r0, #0\n mcr p15, 0, r0, c7, c10, 4\n bx lr\n"
+        "7: .word 0xe92d4070\n ldr pc, 9f\n 8: .word kstock\n 9: .word 0x08039d3c\n");
 }
 __attribute__((naked, section(".text.entry"), used)) void hk_dc_clean(void)
 {
     __asm__ volatile(
+        "ldr ip, 8f\n ldr ip, [ip]\n cmp ip, #0\n bne 7f\n"
         "cmp r1, #0\n bxeq lr\n cmp r1, #0x8000\n bhs 2f\n add r1, r0, r1\n"
         "1: bic r2, r0, #31\n mcr p15, 0, r2, c7, c10, 1\n add r0, r0, #32\n cmp r0, r1\n blo 1b\n b 3f\n"
         "2: mrc p15, 0, r15, c7, c10, 3\n bne 2b\n"        /* test and clean the whole D-cache */
-        "3: mov r0, #0\n mcr p15, 0, r0, c7, c10, 4\n bx lr\n");
+        "3: mov r0, #0\n mcr p15, 0, r0, c7, c10, 4\n bx lr\n"
+        "7: .word 0xe92d4070\n ldr pc, 9f\n 8: .word kstock\n 9: .word 0x08039d74\n");
 }
 __attribute__((naked, section(".text.entry"), used)) void hk_dc_inv(void)
 {
     __asm__ volatile(
+        "ldr ip, 8f\n ldr ip, [ip]\n cmp ip, #0\n bne 7f\n"
         "cmp r1, #0\n bxeq lr\n add r1, r0, r1\n"
-        "1: bic r2, r0, #31\n mcr p15, 0, r2, c7, c6, 1\n add r0, r0, #32\n cmp r0, r1\n blo 1b\n bx lr\n");
+        "1: bic r2, r0, #31\n mcr p15, 0, r2, c7, c6, 1\n add r0, r0, #32\n cmp r0, r1\n blo 1b\n bx lr\n"
+        "7: .word 0xe92d4070\n ldr pc, 9f\n 8: .word kstock\n 9: .word 0x0804e91c\n");
 }
 
 /* --iram-cache: replaces 0x0802cdc8 (control bit 23) in the MMU setup 0x22004534, MMU still off. IRAM's

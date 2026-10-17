@@ -307,6 +307,10 @@ if a.fast_dcache:       # range clean+invalidate, clean, invalidate (addr, len) 
     entry_hook(0x08039d70, 0xe92d4070, 0xe1a06001, sym['hk_dc_clean'])
     entry_hook(0x0804e918, 0xe92d4070, 0xe1a06001, sym['hk_dc_inv'])
 
+# the self-update checks the bytes it reads from /osos-update.dec against this before and while
+# writing: 'ESUM' and the 32-bit byte sum of everything after the header, in the header's unused tail
+assert img[0x7f8:0x800] == b'\0' * 8
+struct.pack_into('<4sI', img, 0x7f8, b'ESUM', sum(img[HDR:]) & 0xffffffff)
 open(a.out, 'wb').write(img)
 print('ok %s: %d bytes, body %#x, E %#x-%#x (%d bytes of %d), heap from %#x%s, md5 %s' % (
     a.out, len(img), len(img) - HDR, E_BASE, E_END, len(e), E_RESERVE, E_BASE + E_RESERVE,

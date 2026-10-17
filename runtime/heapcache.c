@@ -44,10 +44,14 @@ static void hc_flush(void)
 }
 
 /* r: saved r0-r5 (r0 size, r1 tag). 1: handled, r[0] the block */
+extern volatile uint32_t kstock;        /* kfix.c: Apple's heap only */
+void hc_stock(void) { hc_flush(); }
+
 static int __attribute__((used)) hc_malloc(uint32_t *r)
 {
     uint32_t n = r[0], tag = r[1], need, k, c;
     void *p = 0;
+    if (kstock) return 0;
     if (tag == 2 && n <= HC_MAXCAP) {
         need = ((n + 3) & ~3u) + 8;                   /* Apple's block size (0x081921b4) */
         if (need < 16) need = 16;
@@ -89,7 +93,7 @@ static int __attribute__((used)) hc_free(uint32_t *r)
     void *p = (void *)r[0];
     uint32_t h, cap, k, c, i;
     int kept = 0;
-    if (!p || r[1] != 2) return 0;
+    if (kstock || !p || r[1] != 2) return 0;
     h = hc_hdr(p);
     if (!h || (h & 1) || *(uint16_t *)((uint8_t *)p - 4) != 2) return 0;   /* Apple's free checks it */
     cap = (h & ~0xc0000003u) - 8;

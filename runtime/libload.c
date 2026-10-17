@@ -64,11 +64,11 @@ void libload_first_frame(void)
 #endif
 }
 
-/* the boot stage on screen (updscreen.c), before Apple's display takes the LCD; not after USB */
+/* the boot stages on screen (updscreen.c), before Apple's display takes the LCD; not after USB */
 void bootscreen_begin(void);
 void bootscreen_end(void);
-void bootscreen_line(int line, const char *s);
-static void stage(int task, const char *s) { if (!task) { bootscreen_line(0, s); bootscreen_line(1, ""); } }
+void bootscreen_print(const char *s);
+static void stage(int task, const char *s) { if (!task) bootscreen_print(s); }
 
 static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 {
@@ -116,6 +116,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 #endif
     if (sync_no_db) log_s("   sync: database not openable after the mount  <-- CHECK\n");
     log_s("   boot: sync done, Apple's library load next\n"); log_flush();
+    { extern char sync_summary[]; stage(task, sync_summary); }
     stage(task, "Loading library");
     log_t(3);
     res0 = power_residency(0);
@@ -141,6 +142,15 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
         log_s(" without artist)"); log_s(unresolved || lib_tracks != sync_last.flacs - sync_last.skipped ? "  <-- CHECK\n" : "\n");
     }
     log_s("   boot: library loaded, art next\n"); log_flush();
+    {   /* "786 tracks loaded" */
+        char b[32]; int n = 0, v = lib_tracks, k = 0; char t[12];
+        if (!v) t[k++] = '0';
+        for (; v; v /= 10) t[k++] = '0' + v % 10;
+        while (k) b[n++] = t[--k];
+        for (const char *p = " tracks loaded"; *p; p++) b[n++] = *p;
+        b[n] = 0;
+        stage(task, b);
+    }
     stage(task, "Updating album art");
     artdb_update();                    /* FLAC\covers.db follows the album folders */
     { void dose_commit(void); dose_commit(); }   /* FLAC\dose.txt: never from the minute tick */

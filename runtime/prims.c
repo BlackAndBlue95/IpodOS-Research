@@ -6,6 +6,7 @@
 __attribute__((naked, section(".text.entry"), used)) void hk_aget(void)
 {
     __asm__ volatile(
+        "ldr ip, 3f\n ldr ip, [ip]\n cmp ip, #0\n bne 2f\n"                     /* kstock (kfix.c): Apple's code */
         "push {r4, lr}\n ldr ip, [r0]\n"
         "ldr r3, [ip, #0xa4]\n ldr r4, 5f\n cmp r3, r4\n bne 9f\n"             /* copy method is Apple's */
         "ldr r3, [ip, #0x18]\n ldr r4, 6f\n cmp r3, r4\n beq 1f\n"             /* element size 4 */
@@ -14,19 +15,20 @@ __attribute__((naked, section(".text.entry"), used)) void hk_aget(void)
         "cmp r1, #0\n blt 8f\n cmp r3, r1\n ble 8f\n"
         "ldr r3, [r0, #8]\n ldr r3, [r3, r1, lsl #2]\n str r3, [r2]\n mov r0, #1\n pop {r4, pc}\n"
         "8: mov r0, #0\n pop {r4, pc}\n"
-        "9: pop {r4, lr}\n .word 0xe92d41f0\n ldr pc, 4f\n"
-        "4: .word 0x08299e3c\n 5: .word 0x08299d48\n 6: .word 0x08299af0\n 7: .word 0x082901d8\n");
+        "9: pop {r4, lr}\n 2: .word 0xe92d41f0\n ldr pc, 4f\n"
+        "3: .word kstock\n 4: .word 0x08299e3c\n 5: .word 0x08299d48\n 6: .word 0x08299af0\n 7: .word 0x082901d8\n");
 }
 
 /* array copy(this, idx, out) 0x08299d48: element idx to out, no bounds check */
 __attribute__((naked, section(".text.entry"), used)) void hk_acopy(void)
 {
     __asm__ volatile(
+        "ldr ip, 3f\n ldr ip, [ip]\n cmp ip, #0\n bne 9f\n"                     /* kstock: Apple's code */
         "ldr ip, [r0]\n ldr r3, [ip, #0x18]\n ldr ip, 6f\n cmp r3, ip\n beq 1f\n"
         "ldr ip, 7f\n cmp r3, ip\n bne 9f\n ldr r3, [r0, #16]\n cmp r3, #4\n bne 9f\n"
         "1: ldr r3, [r0, #8]\n ldr r0, [r3, r1, lsl #2]\n str r0, [r2]\n bx lr\n"
         "9: .word 0xe92d41f0\n ldr pc, 4f\n"
-        "4: .word 0x08299d4c\n 6: .word 0x08299af0\n 7: .word 0x082901d8\n");
+        "3: .word kstock\n 4: .word 0x08299d4c\n 6: .word 0x08299af0\n 7: .word 0x082901d8\n");
 }
 
 /* bitset {nbits, ?, words} next set bit at or after i, else nbits (0x08299fcc tests one bit per call) */

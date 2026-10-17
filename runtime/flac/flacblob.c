@@ -122,10 +122,12 @@ static void out_post(void *buf, int frames, uint32_t ms, int flags, void *trk)
 static void os_kick(void) { (*(volatile uint32_t *)0x22008cac)++; os_sem_give(0x220106d0, 0); }
 static void os_end_signal(void) { os_signal(0x22008cb0, 0); }
 extern uint32_t kfix_libc[];          /* kfix.c: Apple's memcpy/memmove/memset copied in by --fast-libc, else zeros */
+extern volatile uint32_t kstock;      /* kfix.c: Apple's routines in IRAM rather than the copy */
+static inline uint8_t *libc_at(uint32_t off) { return (kstock ? (uint8_t *)0x22000020 : (uint8_t *)kfix_libc) + off; }
 void *memcpy(void *d, const void *s, size_t n)
 {
     uint8_t *a = d; const uint8_t *b = s;
-    if (kfix_libc[0]) { ((void (*)(void *, const void *, size_t))kfix_libc)(d, s, n); return d; }
+    if (kfix_libc[0]) { ((void (*)(void *, const void *, size_t))libc_at(0))(d, s, n); return d; }
     if ((((uintptr_t)a | (uintptr_t)b) & 3) == 0) {
         uint32_t *wa = (uint32_t *)a; const uint32_t *wb = (const uint32_t *)b;
         while (n >= 16) { wa[0] = wb[0]; wa[1] = wb[1]; wa[2] = wb[2]; wa[3] = wb[3]; wa += 4; wb += 4; n -= 16; }
@@ -138,14 +140,14 @@ void *memcpy(void *d, const void *s, size_t n)
 void *memset(void *d, int c, size_t n)
 {
     uint8_t *a = d;
-    if (kfix_libc[0]) { ((void (*)(void *, size_t, uint32_t))((uint8_t *)kfix_libc + 0x2b8))(d, n, (uint8_t)c * 0x01010101u); return d; }
+    if (kfix_libc[0]) { ((void (*)(void *, size_t, uint32_t))libc_at(0x2b8))(d, n, (uint8_t)c * 0x01010101u); return d; }
     while (n--) *a++ = c;
     return d;
 }
 void *memmove(void *d, const void *s, size_t n)
 {
     uint8_t *a = d; const uint8_t *b = s;
-    if (kfix_libc[0]) { ((void (*)(void *, const void *, size_t))((uint8_t *)kfix_libc + 0xb4))(d, s, n); return d; }
+    if (kfix_libc[0]) { ((void (*)(void *, const void *, size_t))libc_at(0xb4))(d, s, n); return d; }
     if (a < b) while (n--) *a++ = *b++;
     else { a += n; b += n; while (n--) *--a = *--b; }
     return d;

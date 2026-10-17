@@ -69,22 +69,53 @@ int updscreen_ok(void);
 
 static int fail(const char *what, int rc)
 {
+    char line[64];
+    int n = 0;
+    const char *p;
     updscreen_fill(BAR_FAIL);
+    for (p = "Update failed: "; *p; p++) line[n++] = *p;
+    for (p = what; *p && n < 63; p++) line[n++] = *p;
+    line[n] = 0;
+    { void bootscreen_print(const char *); bootscreen_print(line); }
     log_s("   update: FAILED, "); log_s(what); log_s(" rc "); log_d(rc); log_c('\n'); log_flush();
     return rc;
+}
+
+/* the byte sum of the file past its 0x800-byte header, read the way the copy reads it; 0 when the
+   whole file was read */
+static int file_body_sum(uint8_t *buf, uint32_t size, uint32_t *sum)
+{
+    void *mm = os_malloc(0x114);
+    File *ff;
+    uint32_t pos = 0, s = 0, j, want;
+    int n;
+    if (!mm || !(ff = os_file_ctor(mm, UPD_FILE, 1024, 1))) return -1;
+    if (ff->vt->open(ff)) { ff->vt->del(ff); return -2; }
+    while (pos < size) {
+        want = size - pos > CHUNK ? CHUNK : size - pos;
+        n = ff->vt->read(ff, buf, (int)want, 2);
+        if (n != (int)want) break;
+        for (j = pos < 0x800 ? 0x800 - pos : 0; j < want; j++) s += buf[j];
+        pos += want;
+        updscreen_progress(pos, size, BAR_CHECK);
+    }
+    ff->vt->close(ff); ff->vt->del(ff);
+    *sum = s;
+    return pos == size ? 0 : -3;
 }
 
 /* progress in IRAM past the bootloader's mailbox words (0x2203ff00..0x2203ff63): survives the
    watchdog reset, so the boot after a stuck update can say how far it got */
 #define UPD_PROGRESS ((volatile uint32_t *)0x2203ff80)   /* 'UPDP', chunk, chunks, time us */
 void fatdir_close(void);
+void kfix_stock(int on);               /* kfix.c */
 
 /* called from libload() before anything else uses the disk */
 void update_check(void)
 {
     uint8_t hdr[0x810], *buf = 0, *buf2 = 0;
     int size, n, rc, i;
-    uint32_t ss, nsect, part = 0, psize = 0, data_lba, dir_lba, dir_off, nchunks, sum = 0, body, k, osfl_off;
+    uint32_t ss, nsect, part = 0, psize = 0, data_lba, dir_lba, dir_off, nchunks, sum = 0, body, k, osfl_off, esum, bsum = 0;
     Dev *d = 0;
     File *f = 0;
     void *m = 0;
@@ -98,7 +129,8 @@ void update_check(void)
     n = file_read(UPD_FILE, hdr, sizeof hdr, &size);
     if (n < (int)sizeof hdr) return;                                   /* no update file */
     fatdir_close();                    /* our raw handle is closed while the updater has the card */
-    { void bootscreen_line(int, const char *); bootscreen_line(0, "Installing update"); bootscreen_line(1, ""); }
+    kfix_stock(1);                     /* the update reads and writes through Apple's kernel paths only */
+    { void bootscreen_print(const char *); bootscreen_print("Installing update"); }
     updscreen_begin();
     log_s("== update: "); log_s(UPD_FILE); log_s(" found, "); log_d(size); log_s(" bytes, progress bar ");
     log_s(updscreen_ok() ? "drawn\n" : "off (LCD interface did not answer)\n");
@@ -112,6 +144,7 @@ void update_check(void)
         if (vol_delete(UPD_FILE)) vol_rename(UPD_FILE, UPD_DONE);
         vol_delete(UPD_TRY);
         log_flush();
+        kfix_stock(0);
         return;
     }
     file_write(UPD_TRY, "try", 3);
@@ -120,9 +153,19 @@ void update_check(void)
         body > (uint32_t)size - 0x800 || (le32(hdr + 0x800) & 0xff000000) != 0xea000000) {
         fail("not a decrypted IMG1 OS image", -10); goto out;
     }
-    d = os_malloc(sizeof *d); buf = os_malloc(CHUNK); buf2 = os_malloc(CHUNK); m = os_malloc(0x114);
-    if (!d || !buf || !buf2 || !m) { if (d) os_free(d); d = 0; fail("memory", -11); goto out; }
+    buf = os_malloc(CHUNK); buf2 = os_malloc(CHUNK); m = os_malloc(0x114);
+    if (!buf || !buf2 || !m) { fail("memory", -11); goto out; }
     for (k = 0; k < CHUNK; k++) { buf[k] = 0; buf2[k] = 0; }
+    /* the file must read back as mkpatch18.py summed it before anything is written */
+    if (!(hdr[0x7f8] == 'E' && hdr[0x7f9] == 'S' && hdr[0x7fa] == 'U' && hdr[0x7fb] == 'M')) {
+        fail("no checksum in the image (install it with dd)", -21); goto out;
+    }
+    esum = le32(hdr + 0x7fc);
+    { void bootscreen_print(const char *); bootscreen_print("Checking the update file"); }
+    rc = file_body_sum(buf, (uint32_t)size, &k);
+    log_s("   update: file body sum "); log_x(k, 8); log_s(", image says "); log_x(esum, 8); log_s(rc ? ", file not read to the end\n" : "\n"); log_flush();
+    if (rc || k != esum) { fail("the file reads back wrong, not installed", -22); goto out; }
+    if (!(d = os_malloc(sizeof *d))) { fail("memory", -11); goto out; }
     dev_ctor(d, 0, 0);
     dev_open(d);
     ss = dev_ssize(d); nsect = dev_nsect(d);
@@ -190,6 +233,7 @@ void update_check(void)
             log_flush();
             dev_close(d);
             os_free(d); os_free(buf); os_free(buf2);
+            kfix_stock(0);
             return;
         }
     }
@@ -213,7 +257,7 @@ void update_check(void)
         for (j = 0; j < CHUNK; j++) buf[j] = 0;
         n = f->vt->read(f, buf, (int)want, 2);
         if (n != (int)want) { f->vt->close(f); fail("file read", n); goto out; }
-        for (j = 0; j < want; j++) sum += buf[j];
+        for (j = 0; j < want; j++) { sum += buf[j]; if (k * CHUNK + j >= 0x800) bsum += buf[j]; }
         if ((rc = xfer(d, 1, buf, data_lba + k * (CHUNK / ss), CHUNK / ss))) { f->vt->close(f); fail("write", rc); goto out; }
         if ((rc = xfer(d, 0, buf2, data_lba + k * (CHUNK / ss), CHUNK / ss))) { f->vt->close(f); fail("read back", rc); goto out; }
         for (j = 0; j < CHUNK; j++) if (buf[j] != buf2[j]) { f->vt->close(f); fail("verify", (int)(k * CHUNK + j)); goto out; }
@@ -224,6 +268,10 @@ void update_check(void)
         }
     }
     f->vt->close(f);
+    /* the copy's own reads against the header's sum: a mismatch leaves the section invalid, so the
+       bootloader boots /osos-v18.dec instead of a broken image */
+    log_s("   update: written body sum "); log_x(bsum, 8); log_c('\n');
+    if (bsum != esum) { fail("the file read differently during the copy, section left invalid", -23); goto out; }
     UPD_PROGRESS[1] = nchunks;
     updscreen_fill(BAR_DIR);
     /* the directory entry: length and checksum of the osfl section */
@@ -265,4 +313,5 @@ out:
     log_s("   update: file removed after the failure\n");
     if (invalidated) log_s("   update: the firmware section is not valid now: the bootloader boots /osos-v18.dec until an update succeeds\n");
     log_flush();
+    kfix_stock(0);
 }
