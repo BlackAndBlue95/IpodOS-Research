@@ -120,33 +120,6 @@ static int run_to(const char *script, int n, const char *file)
 }
 int rtxcbug_run(const char *script, int n) { return run_to(script, n, OUT_FILE); }
 
-/* FLAC\rtxcbug-tick.txt at boot (read and deleted): the clock tick runs it every 30 s or more, up to
-   TICK_MAX times, into FLAC\semihost-tick1.txt.. (state while something is stuck, e.g. a video) */
-#define TICK_SCRIPT "FLAC\\rtxcbug-tick.txt"
-#define TICK_MAX    8
-static char tick_s[1024];
-static int tick_n, tick_runs;
-static uint32_t tick_last;
-void rtxcbug_tick_load(void)
-{
-    int n = file_read(TICK_SCRIPT, tick_s, sizeof tick_s, 0);
-    if (n <= 0) return;
-    vol_delete(TICK_SCRIPT);
-    tick_n = n;
-    tick_last = TIMER_E;                 /* the first dump 30 s after boot, not during it */
-    log_s("   rtxcbug: " TICK_SCRIPT " loaded, "); log_d(TICK_MAX); log_s(" timed dumps\n");
-}
-void rtxcbug_tick(void)
-{
-    char name[] = "FLAC\\semihost-tick0.txt";
-    if (!tick_n || tick_runs >= TICK_MAX || TIMER_E - tick_last < 30000000) return;
-    tick_last = TIMER_E;
-    name[18] = '1' + tick_runs++;
-    run_to(tick_s, tick_n, name);
-    log_s("   rtxcbug: timed dump "); log_d(tick_runs); log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms\n");
-    log_flush();
-}
-
 /* The object menu called in this task with interrupts off, nothing blocked: 'u' leaves it. */
 int rtxcbug_cmds(const char *script, int n)
 {

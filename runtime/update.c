@@ -98,6 +98,7 @@ void update_check(void)
     n = file_read(UPD_FILE, hdr, sizeof hdr, &size);
     if (n < (int)sizeof hdr) return;                                   /* no update file */
     fatdir_close();                    /* our raw handle is closed while the updater has the card */
+    { void bootscreen_line(int, const char *); bootscreen_line(0, "Installing update"); bootscreen_line(1, ""); }
     updscreen_begin();
     log_s("== update: "); log_s(UPD_FILE); log_s(" found, "); log_d(size); log_s(" bytes, progress bar ");
     log_s(updscreen_ok() ? "drawn\n" : "off (LCD interface did not answer)\n");
@@ -248,6 +249,7 @@ void update_check(void)
     UPD_PROGRESS[0] = 0;
     log_s(", file renamed, restart\n");
     log_flush();
+    vol_sync();                                         /* the rename and the log reach the disk before the reset */
     os_sleep_ms(500);
     __asm__ volatile("msr CPSR_c, #0xd3");
     WDTCON = 0x100000;

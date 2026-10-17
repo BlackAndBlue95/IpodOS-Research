@@ -44,7 +44,9 @@ Called from the OS at boot (call site `0x0804d7c4`) and after disk mode (`0x081a
 TMusicLoadingTask `0x081ae280`). Both call Apple's loader `0x0805d62c` (LIBLOAD).
 
 Order: headset chip re-init (boot only) → `os_vol_mount(0)` → settings → self-update check →
-sync → `os_libload` → health line → art database → headset plug events → log flush.
+sync → `os_libload` → health line → art database → dose file → headset plug events → log flush.
+At boot each stage is shown on the screen and the log is flushed after the update check, the sync
+and Apple's load, so a stall names its stage (see "Boot screen" in section 9).
 
 - **Mount.** Entering disk mode the OS unmounts FAT volume 0; LIBLOAD remounts it itself 12
   instructions in (`0x08058584` → `0x080e45dc(0)`). Until then every File open returns 3 (the
@@ -341,10 +343,28 @@ row pushing Apple's `Debug_MainMenu_Screen` is available (`ROWS` in the generato
 Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, `limit=`,
 `loudness=`, `fatigue=`, `crossfeed=`, `phones=`, optional `city=`).
 
-Our restarts reset by watchdog without unmounting, so writes still in the FAT driver's cache are
-lost (a new `iTunesDB`'s cluster chain was, after a crash); write nothing right before a reset.
-Apple's own restart (`0x081db3c8`) unmounts volume 0 first, but its unmount waits without limit for
-the volume's other users.
+### Disk access rules
+
+- Apple's FAT driver keeps table and directory changes cached. Close, delete and File flush
+  (`+0x20` → FAT `+0x2c` → volume sync `+0x30`) write them; rename does not. `vol_sync()` (osfile.c)
+  flushes after the `iTunesDB` swap, the `covers.db` renames and the update's rename, and before our
+  watchdog restarts. A crash reset still loses whatever is cached, as on stock.
+- No file calls (nor log flushes or theme switches) from the minute tick `0x0817ce28`: it can run
+  inside a FAT driver call (the volume mutex is recursive), and a write there hung playback and put
+  a FAT sector over a directory. The dose is written at the library load only.
+- Do not commit by unmounting (`0x0806aa08` → `0x0828c34c`): it waits without limit until it is the
+  volume's only user, and hung the boot.
+- The FAT allocator hooks (`hk_fatfree`, `hk_fatsearch`, `hk_fatrun`, `hk_fatinfo`) are required on a
+  256 GB card: stock, the free count is a full scan of a 62 MB table and a low next-free hint makes a
+  small write read 1.4M entries, long enough to stall the boot.
+- Nothing writes into an OS image at run time.
+
+### Boot screen
+
+During the library load at boot the LCD still belongs to the bootloader's set-up (Apple's LCD init
+comes after it), so `updscreen.c` draws two lines of status text there (5x7 capitals, 2x) through
+the same interface as the update bar: the stage (`stage()` in libload.c) and the sync's progress
+(`ls_status`). Drawing stops before Apple's LCD init; nothing is drawn after USB sessions.
 
 ## 10. Power and hibernate (`runtime/power.c`)
 

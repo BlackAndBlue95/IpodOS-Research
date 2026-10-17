@@ -235,6 +235,8 @@ if a.hooks == 'all':
     if a.ft_raster:   # raster_class of the "smooth" and "smooth-lcd" renderer classes (FT_Raster_Funcs 0x0890d8c4)
         wr(0x0890d914, sym['ft_grays_raster'], 0x0890d8c4)
         wr(0x0890d950, sym['ft_grays_raster'], 0x0890d8c4)
+    # required on a 256 GB card (15.6M clusters): stock, the free count is a full FAT scan and a low
+    # next-free hint makes one small write read 1.4M entries, long enough to stall the boot
     entry_hook(0x082d75c8, 0xe92d40f8, 0xe3a05000, sym['hk_fatfree'])  # FAT free count: seeded from FSInfo instead of a full FAT scan
     entry_hook(0x082d61c0, 0xe92d40f8, 0xe1a06000, sym['hk_fatsearch'])  # free-cluster search: raw FAT reads for long ranges
     entry_hook(0x082d6080, 0xe92d4fff, 0xe24dd00c, sym['hk_fatrun'])     # free-run search: starts at the first cluster free on disk

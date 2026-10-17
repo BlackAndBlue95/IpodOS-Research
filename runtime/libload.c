@@ -64,10 +64,17 @@ void libload_first_frame(void)
 #endif
 }
 
+/* the boot stage on screen (updscreen.c), before Apple's display takes the LCD; not after USB */
+void bootscreen_begin(void);
+void bootscreen_end(void);
+void bootscreen_line(int line, const char *s);
+static void stage(int task, const char *s) { if (!task) { bootscreen_line(0, s); bootscreen_line(1, ""); } }
+
 static void libload(int task, void *a0, void *a1, void *a2, void *a3)
 {
     uint32_t t, res0;
     int sz, rc;
+    if (!task) { bootscreen_begin(); stage(task, "Starting"); }
     if (!loads) e_debug = file_read("FLAC\\debug.txt", 0, 0, &sz) >= 0;
     loads++;
 #ifdef PROF
@@ -81,7 +88,6 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     if (!task) { void crash_report(void); crash_report(); }
     if (!task) { void power_trail_report(void); power_trail_report(); }   /* DIAG: resume trail */
     if (!task) { void audio_listener_guard(void); audio_listener_guard(); }   /* crash.c */
-    if (!task) { void rtxcbug_tick_load(void); rtxcbug_tick_load(); }   /* semihost.c */
     path_new_library();
     art_new_library();
     if (!task) {
@@ -92,19 +98,25 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
        instructions into LIBLOAD (0x080e45dc through 0x08058584); until then every file open
        returns 3. Mounting here is idempotent: at boot it does nothing. */
     t = TIMER_E;
+    stage(task, "Mounting disk");
     rc = os_vol_mount(0);
     log_s("   mount: volume 0 rc "); log_d(rc); log_s(" ("); log_d((int)(TIMER_E - t)); log_s(" us)\n");
     log_t(2);
+    stage(task, "Loading settings");
     if (loads == 1) settings_boot(1);  /* settings file and theme, unless the app-init hook already did it */
     if (loads == 1) { void update_check(void); update_check(); }   /* /osos-update.dec -> firmware partition, restart */
+    log_s("   boot: settings and update check done, sync next\n"); log_flush();   /* a stall after here names its stage */
 #ifdef PROF
     { void prof_mark(const char *); prof_mark("sync start"); }
 #endif
+    stage(task, "Syncing library");
     sync_library(task);                /* iTunesDB follows the .flac files before the OS reads it */
 #ifdef PROF
     { void prof_mark(const char *); prof_mark("os_libload start"); }
 #endif
     if (sync_no_db) log_s("   sync: database not openable after the mount  <-- CHECK\n");
+    log_s("   boot: sync done, Apple's library load next\n"); log_flush();
+    stage(task, "Loading library");
     log_t(3);
     res0 = power_residency(0);
     t = TIMER_E;
@@ -128,7 +140,10 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
         log_d(unresolved); log_s(" unresolved ("); log_d(lib_noalbum); log_s(" without album, "); log_d(lib_noartist);
         log_s(" without artist)"); log_s(unresolved || lib_tracks != sync_last.flacs - sync_last.skipped ? "  <-- CHECK\n" : "\n");
     }
+    log_s("   boot: library loaded, art next\n"); log_flush();
+    stage(task, "Updating album art");
     artdb_update();                    /* FLAC\covers.db follows the album folders */
+    { void dose_commit(void); dose_commit(); }   /* FLAC\dose.txt: never from the minute tick */
     log_t(5);
 #ifndef NO_MIKEY
     if (mikey_pending) { mikey_pending = 0; mikey_events(); }
@@ -136,6 +151,8 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     log_s("   "); log_d(path_fixed); log_s(" non-ASCII locations given their full length\n");
     path_fixed = 0;
     power_log();
+    stage(task, "Starting UI");
+    if (!task) bootscreen_end();       /* Apple's LCD init follows: the interface is its from here */
     log_t(6);
     log_timeline();
 #ifdef PROF

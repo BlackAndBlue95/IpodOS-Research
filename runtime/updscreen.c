@@ -75,6 +75,71 @@ void updscreen_begin(void)
     rect(BAR_X, BAR_Y, BAR_W, BAR_H, 0x0000);
 }
 
+/* ---- boot status text: 5x7 capitals, digits and a few marks, drawn 2x in two lines above the bar ---- */
+static const char glyph_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:/.-,()%";
+static const uint8_t glyphs[][7] = {
+    { 14, 17, 17, 31, 17, 17, 17 }, { 30, 17, 17, 30, 17, 17, 30 }, { 14, 17, 16, 16, 16, 17, 14 }, { 30, 17, 17, 17, 17, 17, 30 },
+    { 31, 16, 16, 30, 16, 16, 31 }, { 31, 16, 16, 30, 16, 16, 16 }, { 14, 17, 16, 23, 17, 17, 15 }, { 17, 17, 17, 31, 17, 17, 17 },
+    { 14, 4, 4, 4, 4, 4, 14 },      { 7, 2, 2, 2, 2, 18, 12 },      { 17, 18, 20, 24, 20, 18, 17 }, { 16, 16, 16, 16, 16, 16, 31 },
+    { 17, 27, 21, 21, 17, 17, 17 }, { 17, 17, 25, 21, 19, 17, 17 }, { 14, 17, 17, 17, 17, 17, 14 }, { 30, 17, 17, 30, 16, 16, 16 },
+    { 14, 17, 17, 17, 21, 18, 13 }, { 30, 17, 17, 30, 20, 18, 17 }, { 15, 16, 16, 14, 1, 1, 30 },  { 31, 4, 4, 4, 4, 4, 4 },
+    { 17, 17, 17, 17, 17, 17, 14 }, { 17, 17, 17, 17, 17, 10, 4 },  { 17, 17, 17, 21, 21, 21, 10 }, { 17, 17, 10, 4, 10, 17, 17 },
+    { 17, 17, 10, 4, 4, 4, 4 },     { 31, 1, 2, 4, 8, 16, 31 },
+    { 14, 17, 19, 21, 25, 17, 14 }, { 4, 12, 4, 4, 4, 4, 14 },      { 14, 17, 1, 2, 4, 8, 31 },     { 31, 2, 4, 2, 1, 17, 14 },
+    { 2, 6, 10, 18, 31, 2, 2 },     { 31, 16, 30, 1, 1, 17, 14 },   { 6, 8, 16, 30, 17, 17, 14 },   { 31, 1, 2, 4, 8, 8, 8 },
+    { 14, 17, 17, 14, 17, 17, 14 }, { 14, 17, 17, 15, 1, 2, 12 },
+    { 0, 12, 12, 0, 12, 12, 0 },    { 1, 2, 2, 4, 8, 8, 16 },       { 0, 0, 0, 0, 0, 12, 12 },      { 0, 0, 0, 31, 0, 0, 0 },
+    { 0, 0, 0, 0, 12, 4, 8 },       { 2, 4, 8, 8, 8, 4, 2 },        { 8, 4, 2, 2, 2, 4, 8 },        { 24, 25, 2, 4, 8, 19, 3 },
+};
+#define TXT_X 4
+#define TXT_Y 150
+#define TXT_CHARS 26                           /* 12 px per character */
+static int boot_text;
+
+/* from the library load at boot until Apple's LCD init: the bootloader's panel set-up is still in place */
+void bootscreen_begin(void)
+{
+    int t = (PDAT6 & 0x30) >> 4;
+    ok = 1; boot_text = 1;
+    cmd16 = t >= 2;
+    cmd_mode = cmd16 ? MODE_P18 : MODE_P8;
+}
+void bootscreen_end(void) { boot_text = 0; }
+
+/* line 0 or 1: the text, upper-cased, the rest of the line cleared */
+void bootscreen_line(int line, const char *s)
+{
+    int x0 = TXT_X, y0 = TXT_Y + line * 20, w = TXT_CHARS * 12, h = 16, x, y, xe = x0 + w - 1, ye = y0 + h - 1;
+    uint8_t idx[TXT_CHARS];
+    uint32_t saved;
+    for (x = 0; x < TXT_CHARS; x++) {
+        char c = s && *s ? *s++ : ' ';
+        int k;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        for (k = 0; glyph_chars[k] && glyph_chars[k] != c; k++);
+        idx[x] = glyph_chars[k] ? (uint8_t)k : 0xff;
+    }
+    if (!ok || !boot_text) return;
+    saved = LCD_CON;
+    con(cmd_mode);
+    if (cmd16) {
+        reg(0x210, x0); reg(0x211, xe); reg(0x212, y0); reg(0x213, ye);
+        reg(0x200, x0); reg(0x201, y0); cmd(0x202);
+    } else {
+        cmd(0x2a); dat(x0 >> 8); dat(x0 & 0xff); dat(xe >> 8); dat(xe & 0xff);
+        cmd(0x2b); dat(y0 >> 8); dat(y0 & 0xff); dat(ye >> 8); dat(ye & 0xff);
+        cmd(0x2c);
+    }
+    con(MODE_P16);
+    for (y = 0; y < h && ok; y++)
+        for (x = 0; x < w && ok; x++) {
+            int ch = x / 12, gx = (x % 12) / 2, gy = (y - 1) / 2, on = 0;
+            if (idx[ch] != 0xff && gx < 5 && y >= 1 && gy < 7) on = glyphs[idx[ch]][gy] >> (4 - gx) & 1;
+            dat(on ? 0xffff : 0x0000);
+        }
+    con(saved);
+}
+
 /* k of n done, in colour c: only the new part is drawn; a new colour restarts from the left */
 void updscreen_progress(uint32_t k, uint32_t n, uint16_t c)
 {

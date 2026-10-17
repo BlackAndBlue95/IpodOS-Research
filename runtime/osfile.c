@@ -1,6 +1,27 @@
 /* File and volume calls into Apple's OS, used by every part of region E. */
 #include "e.h"
 
+/* Writes the FAT driver's cached table and directory changes to the disk, as Apple's File flush does
+   (File +0x20 -> FAT +0x2c -> volume sync +0x30). Renames leave them cached; a reset would lose them.
+   Only from the library load or a menu action, never from the minute tick. 0 ok. */
+int vol_sync(void)
+{
+    static const char *const any[3] = { "iPod_Control\\iTunes\\iTunesDB", "FLAC\\settings.txt", "FLAC\\rtlog.txt" };
+    int k, rc = -1;
+    for (k = 0; k < 3 && rc; k++) {
+        void *m = os_malloc(0x114);
+        File *f;
+        if (!m) return -1000;
+        if (!(f = os_file_ctor(m, any[k], 1024, 1))) return -1001;
+        if (!(rc = f->vt->open(f))) {
+            f->vt->flush(f);
+            f->vt->close(f);
+        }
+        f->vt->del(f);
+    }
+    return rc;
+}
+
 /* creates a new file and writes n bytes; 0 ok, else the create rc or -1000..-1002 */
 int file_write(const char *path, const void *data, uint32_t n)
 {

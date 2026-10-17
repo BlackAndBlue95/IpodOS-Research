@@ -1,15 +1,15 @@
 /* Weekly sound dose (ITU-T H.870): the decoder's running total (flac/hearing.c) is booked to the
- * day it was heard on the minute tick; the last 7 days are the weekly figure. Kept in FLAC\dose.txt. */
+ * day it was heard on the minute tick; the last 7 days are the weekly figure. Kept in FLAC\dose.txt,
+ * written only from the library load: the minute tick can run inside a FAT driver call. */
 #include "e.h"
 #include "flac/hearing.h"
 
 #define os_get_datetime ((int (*)(uint8_t *))0x08083b08)      /* sec, min, hour, mday, month, -, u16 year, wday */
 #define DOSE_FILE "FLAC\\dose.txt"
-#define SAVE_MIN 30                                            /* minutes between writes while the dose grows */
 
 static int32_t day_no[7];
 static uint32_t day_ppm[7], seen, unsaved;
-static int loaded, since_save;
+static int loaded;
 
 static int32_t today(void)
 {
@@ -26,7 +26,7 @@ static int32_t today(void)
     }
 }
 
-void dose_save(void)
+static void dose_save(void)
 {
     char buf[7 * 24];
     int n = 0, k;
@@ -43,7 +43,7 @@ void dose_save(void)
     }
     vol_delete(DOSE_FILE);
     file_write(DOSE_FILE, buf, n);
-    unsaved = 0; since_save = 0;
+    unsaved = 0;
 }
 
 /* at the settings load (the file system is up) */
@@ -89,8 +89,10 @@ void dose_tick(void)
     if (day_no[slot] != t) { day_no[slot] = t; day_ppm[slot] = 0; }
     day_ppm[slot] += inc;
     unsaved += inc;
-    if (unsaved && ++since_save >= SAVE_MIN) dose_save();
 }
+
+/* library load: what was heard since the last write, if anything */
+void dose_commit(void) { if (unsaved) dose_save(); }
 
 /* "Sound dose 37% this week" */
 const char *dose_text(void)

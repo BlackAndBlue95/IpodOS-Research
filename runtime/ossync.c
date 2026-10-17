@@ -285,6 +285,7 @@ void ls_status(const char *msg)
 {
     boost_hold(10000);                 /* full speed while the sync works */
     log_s("   sync: "); log_s(msg); log_c('\n');
+    { void bootscreen_line(int, const char *); bootscreen_line(1, msg); }   /* at boot only (updscreen.c) */
 }
 
 /* ---- time ---- */
@@ -427,6 +428,7 @@ void sync_library(int task)
     log_c('\n');
     fatdir_mode = 0;
     os_free(mem);
+    if (rc >= 0 && r.wrote) vol_sync();                     /* the iTunesDB swap is renames: cached until a sync */
     sync_rc = rc; sync_last = r; summarize(rc, &r);
     sync_no_db = rc < 0 && r.msg[0] == 'n' && r.msg[1] == 'o' && r.msg[2] == ' ' && r.msg[3] == 'i';
     log_s("   sync: ");

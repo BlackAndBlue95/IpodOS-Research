@@ -22,6 +22,7 @@ struct FileVT {
     int   (*seek)(File *, int64_t, int);     /* 0 = ok */
     int   (*s6)(File *);                     /* size is max(s6, s7) */
     int   (*s7)(File *);
+    int   (*flush)(File *);                  /* +0x20 0x081ea4f0: stream flush, then the FAT volume sync */
 };
 struct File { const struct FileVT *vt; };
 #define os_file_ctor    ((File *(*)(void *, const char *, int, int))0x081ea554)

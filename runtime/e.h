@@ -25,6 +25,7 @@ void crumb_state(int s);                     /* 1 ui init, 2 first frame */
 int file_write(const char *path, const void *data, uint32_t n);
 int file_read(const char *path, void *buf, int max, int *size);
 int vol_delete(const char *path);
+int vol_sync(void);
 int vol_rename(const char *path, const char *new_name);
 int dir_list(const char *dir, int (*cb)(void *ctx, const char *name, int is_dir, uint32_t size,
                                         uint16_t date, uint16_t time), void *ctx);

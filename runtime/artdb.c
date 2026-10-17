@@ -266,6 +266,7 @@ out:
         if (rc) vol_delete(ADB_NEW);
     }
     if (ntmp) vol_delete(ADB_TMP);
+    vol_sync();                                         /* the renames are only cached until a sync */
     if (newtab && !rc) adopt(newtab, n);
     else { if (newtab) os_free(newtab); artdb_load(); }
     if (changed) {

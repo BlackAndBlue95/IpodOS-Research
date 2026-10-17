@@ -32,12 +32,8 @@ int theme_apply(int mode, int accent, int rebuild_ui);
 extern int theme_mode, theme_accent;
 extern char sync_summary[];          /* ossync.c: the last sync's one-line result */
 
-/* The choice the early hook reads. It sits in region E, at file offset
-   IMG_HDR + IMG_E_LOAD + (address - E_BASE) in the image file; embed_write() updates it.
-   The file is /osos-v18.dec until the bootloader boots the firmware-partition copy. */
-#define IMG_FILE   "osos-v18.dec"
-#define IMG_HDR    0x800u
-#define IMG_E_LOAD 0xb3ded8u                                     /* mkpatch18.py E_LOAD */
+/* The choice the early hook falls back to when the settings file is not readable yet: the build's
+   defaults (nothing writes into the boot image at run time). */
 #define THEME_MAGIC 0x454d4854u                                  /* "THME" */
 volatile uint32_t theme_boot[4] __attribute__((aligned(16))) = { THEME_MAGIC, 0, 0, 0 };   /* magic, mode, accent, city + 1 (initialised data inside E) */
 
@@ -56,7 +52,6 @@ static const char *const fatigue_keys[4] = { "off", "gentle", "medium", "strong"
 static const char *const limit_keys[7] = { "off", "75", "80", "85", "90", "95", "100" };
 static const char *const phones_keys[4] = { "earbuds", "inear", "overear", "highimp" };
 void dose_load(void);
-void dose_save(void);
 void dose_tick(void);
 const char *dose_text(void);
 
@@ -134,31 +129,6 @@ static int settings_load(void)
     theme_style = settings_style;
     hear_gen++;
     return 1;
-}
-
-/* ---- the copy inside the image file ---- */
-static int embed_write(void)
-{
-    void *m = os_malloc(0x114);
-    File *f;
-    uint32_t off = IMG_HDR + IMG_E_LOAD + ((uint32_t)theme_boot - E_BASE), magic = 0, n = 12, vals[3];
-    int rc;
-    vals[0] = settings_mode; vals[1] = theme_accent; vals[2] = settings_city + 1;
-    if (theme_boot[1] == vals[0] && theme_boot[2] == vals[1] && theme_boot[3] == vals[2]) return 0;
-    static int failed;
-    if (failed) return -6;                                   /* the OS opens the image read-only (rc -4): stop after the first failure */
-    if (!m || !(f = os_file_ctor(m, IMG_FILE, 1024, 1))) return -1;
-    rc = f->vt->open(f);
-    if (!rc) {
-        if (f->vt->seek(f, (int64_t)off, 0) || f->vt->read(f, &magic, 4, 2) != 4 || magic != THEME_MAGIC) rc = -2;
-        else if (f->vt->seek(f, (int64_t)off + 4, 0)) rc = -3;
-        else rc = os_file_write(f, vals, &n) ? -4 : 0;
-        f->vt->close(f);
-    } else rc = -5;
-    f->vt->del(f);
-    if (!rc) { theme_boot[1] = vals[0]; theme_boot[2] = vals[1]; theme_boot[3] = vals[2]; } else failed = 1;
-    log_s("   settings: image copy "); log_s(rc ? "not updated, rc " : "updated"); if (rc) log_d(rc); log_c('\n');
-    return rc;
 }
 
 /* ---- sun: the place is the city nearest the iPod's Date & Time zone ---- */
@@ -270,8 +240,6 @@ void settings_boot(int final)
         theme_apply(applied, theme_accent, 0);
         if (settings_mode != boot_mode) log_s("   settings: theme choice changed, takes effect at the next start\n");
     }
-    /* no embed_write here: the OS opens the image read-only (rc -4), so the write would fail
-       on every boot. A settings action still tries it. */
 }
 
 /* ---- the two vtable slots ---- */
@@ -307,12 +275,13 @@ void os_restart(void)
 {
     log_s("   settings: restart\n");
     log_flush();
+    vol_sync();                                         /* a menu action: the cached FAT changes reach the disk */
     __asm__ volatile("msr CPSR_c, #0xd3");                  /* supervisor mode, IRQ and FIQ masked */
     WDTCON = 0x100000;
     for (;;) ;
 }
 
-/* a theme, accent or style change while the UI is up: re-colour the resources, then let every
+/* a theme, accent or style change from a menu action: re-colour the resources, then let every
    view on screen reload them as a language change does. Each step flushes the log so a crash
    names the step. */
 static void switch_live(int mode)
@@ -367,8 +336,6 @@ E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
         log_s("   switch: action "); log_s(action); log_c('\n'); log_flush();
         settings_save();
         log_s("   switch: saved\n"); log_flush();
-        embed_write();
-        log_s("   switch: image copy tried\n"); log_flush();
         switch_live(g ? (applied < 0 ? effective_mode(settings_mode) : applied) : effective_mode(settings_mode));
         post_keys();
         log_flush();
@@ -428,14 +395,14 @@ static int __attribute__((used)) tick_c(uint32_t *r)
     (void)r;
     { void power_trail(uint32_t); power_trail('tick'); }   /* DIAG */
     { void power_resume_check(void); power_resume_check(); }
-    { void rtxcbug_tick(void); rtxcbug_tick(); }   /* FLAC\rtxcbug-tick.txt dumps (semihost.c) */
     dose_tick();
+    /* no file calls and no theme switch here: this hook can run inside a FAT driver call. Automatic
+       mode changes at the next start. */
     if (settings_mode == 2) {
         int m = is_night();
         if (m != applied && m != noted) {
             noted = m;
-            log_s("   settings: Automatic: "); log_s(m ? "sunset" : "sunrise"); log_c('\n');
-            switch_live(m);
+            log_s("   settings: Automatic: "); log_s(m ? "sunset" : "sunrise"); log_s(", the theme follows at the next start\n");
             os_post(os_settings_obj(), FOURCC('*', '*', '*', '*'), KEY_THEME_TEXT);
         }
     }
