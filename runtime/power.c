@@ -71,6 +71,40 @@ int power_pmu_set(int reg, int val)
     os_unlock17();
     return rc;
 }
+/* DIAG resume trail: the last events with their times, past the crash record in the reserve below
+   the heap (survives a reset); printed and cleared at the next boot */
+#define TRAIL ((volatile uint32_t *)(*(volatile uint32_t *)0x0804b44c - 0x100))   /* heap base literal */
+#define TRAIL_MAGIC 0x6c696172u
+#define TRAIL_N 28
+void power_trail(uint32_t code)
+{
+    volatile uint32_t *t = TRAIL;
+    uint32_t i;
+    if (t[0] != TRAIL_MAGIC) { t[0] = TRAIL_MAGIC; t[1] = 0; t[60] = t[61] = 0; }
+    i = t[1]++ % TRAIL_N;
+    t[2 + 2 * i] = code; t[3 + 2 * i] = TIMER_E / 1000;
+}
+void power_trail_frame(void) { volatile uint32_t *t = TRAIL; if (t[0] == TRAIL_MAGIC) { t[60]++; t[61] = TIMER_E / 1000; } }
+void power_trail_report(void)
+{
+    volatile uint32_t *t = TRAIL;
+    uint32_t n, i, k;
+    if (t[0] == TRAIL_MAGIC && (n = t[1])) {
+        log_s("   power: previous run's trail (event ms):");
+        for (k = n > TRAIL_N ? n - TRAIL_N : 0; k < n; k++) {
+            i = k % TRAIL_N;
+            log_c(' '); log_c((char)(t[2 + 2 * i] >> 24)); log_c((char)(t[2 + 2 * i] >> 16)); log_c((char)(t[2 + 2 * i] >> 8)); log_c((char)t[2 + 2 * i]);
+            log_c(' '); log_d((int)t[3 + 2 * i]);
+        }
+        log_s("; frames "); log_d((int)t[60]); log_s(", last at "); log_d((int)t[61]); log_s(" ms\n");
+    }
+    t[0] = 0;
+    power_trail('boot');
+    if (file_read("FLAC\\hibernate-test.txt", 0, 0, (int *)&n) >= 0) {   /* hibernate after 1 minute of sleep */
+        *SLEEP_MIN = 1; *SLEEP_MIN2 = 1;
+        log_s("   power: hibernate test: after 1 minute of sleep\n");
+    }
+}
 /* After a resume (header 'used') the OS skips two steps: full speed (the NOR hand-over leaves the
  * clock at 13.5 MHz) and clearing the PMU hibernate flag (GPIO3CFG back to 7, as a cold boot does).
  * Called from the LCD init hook and the minute tick; acts once per resume. */
@@ -79,6 +113,7 @@ void power_resume_check(void)
 {
     if (HIB_HDR[0] != 0x75736564u || resume_seen == HIB_HDR[2] + 1) return;
     resume_seen = HIB_HDR[2] + 1;
+    power_trail('resm');
     boost_hold(10000);
     power_pmu_set(0x16, 7);
     power_state_log("RESUMED from hibernate: full speed held, hibernate flag cleared");

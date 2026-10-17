@@ -79,6 +79,7 @@ static void libload(int task, void *a0, void *a1, void *a2, void *a3)
     log_s(" at "); log_d((int)(TIMER_E / 1000)); log_s(" ms");
     log_s(e_debug ? ", debug\n" : "\n");
     if (!task) { void crash_report(void); crash_report(); }
+    if (!task) { void power_trail_report(void); power_trail_report(); }   /* DIAG: resume trail */
     if (!task) { void audio_listener_guard(void); audio_listener_guard(); }   /* crash.c */
     if (!task) { void rtxcbug_tick_load(void); rtxcbug_tick_load(); }   /* semihost.c */
     path_new_library();

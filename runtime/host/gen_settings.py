@@ -16,26 +16,31 @@ STATUSBAR_TEXT, LIST_TEMPLATE = 0x0dad0172, 0x0dad017f
 # ids we add; each is above Apple's largest id of its type
 THEME_SCREEN, THEME_LAYOUT, ACCENT_SCREEN, ACCENT_LAYOUT = 0x0dad0f80, 0x0dad0f81, 0x0dad0f82, 0x0dad0f83
 LIBRARY_SCREEN, LIBRARY_LAYOUT = 0x0dad0f88, 0x0dad0f89
-PREVIEW_LAYOUT = (0x0dad0f84, 0x0dad0f85, 0x0dad0f8a)     # Settings-screen layouts shown while our rows are highlighted
-PREVIEW_VLYT = (0x0dad0f86, 0x0dad0f87, 0x0dad0f8b)       # the info pane of each (shared by the submenu canvases)
-ROW_PID = (0x0dad0f60, 0x0dad0f61, 0x0dad0f62)            # our rows in Settings
-ITEM_ID = (0x54, 0x55, 0x56)                              # submenu lists
-CANVAS = (0x448, 0x449, 0x44a, 0x44b, 0x45c, 0x45d)       # theme, accent, library submenus; theme, accent, library previews
+HEARING_SCREEN, HEARING_LAYOUT = 0x0dad0fc0, 0x0dad0fc1
+PREVIEW_LAYOUT = (0x0dad0f84, 0x0dad0f85, 0x0dad0f8a, 0x0dad0fc2, 0x0dad0fc4)   # Settings-screen layouts shown while our rows are highlighted
+PREVIEW_VLYT = (0x0dad0f86, 0x0dad0f87, 0x0dad0f8b, 0x0dad0fc3, 0x0dad0fc5)     # the info pane of each (shared by the submenu canvases)
+ROW_PID = (0x0dad0f60, 0x0dad0f61, 0x0dad0f62, 0x0dad0f63, 0x0dad0f64)          # our rows in Settings
+ITEM_ID = (0x54, 0x55, 0x56, 0x57)                        # submenu lists
 INST0 = 0x44c                                             # 4 sub-instances per canvas: status bar, background, info, list (0x44c..0x45b, 0x45e..)
-KEY_TEXT = (0x8930, 0x8931, 0x8932)                       # provider keys: current value text
-KEY_CHECK = (0x8940, 0x8950, 0x8960)                      # provider keys: checkmark image, + option index
+KEY_TEXT = (0x8930, 0x8931, 0x8932, 0x8933, 0x8934)       # provider keys: current value text
+KEY_CHECK = (0x8940, 0x8950, 0x8960, 0x8970)              # provider keys: checkmark image, + option index
 THEME_OPTIONS = ['Light', 'Dark', 'Automatic', 'Modern style', 'Restart to apply']
 ACCENT_OPTIONS = ['Blue', 'Purple', 'Pink', 'Red', 'Orange', 'Yellow', 'Green', 'Graphite']
 LIBRARY_OPTIONS = ['Sync library now', 'Power state to log']
-STR_LABEL = (0x0dad0f70, 0x0dad0f71, 0x0dad0f8c)
-STR_THEME0, STR_ACCENT0, STR_LIBRARY0 = 0x0dad0f72, 0x0dad0f78, 0x0dad0f8d   # 5 theme options (0f72..0f76), 8 accents (0f78..0f7f), 1 library (0f8d)
-STR0 = (STR_THEME0, STR_ACCENT0, STR_LIBRARY0)
+HEARING_OPTIONS = ['Loud limit', 'Loudness', 'Ear fatigue', 'Crossfeed', 'Phones']   # value rows like Clicker: the value is drawn on the right
+STR_LABEL = (0x0dad0f70, 0x0dad0f71, 0x0dad0f8c, 0x0dad0fc6, 0x0dad0fc7)
+STR_THEME0, STR_ACCENT0, STR_LIBRARY0, STR_HEARING0 = 0x0dad0f72, 0x0dad0f78, 0x0dad0f8d, 0x0dad0fc8   # theme 0f72.., accents 0f78.., library 0f8d.., hearing 0fc8..
+STR0 = (STR_THEME0, STR_ACCENT0, STR_LIBRARY0, STR_HEARING0)
 GROUPS = [('Theme', THEME_OPTIONS, THEME_SCREEN, THEME_LAYOUT, 'SetTheme_'), ('Accent Colour', ACCENT_OPTIONS, ACCENT_SCREEN, ACCENT_LAYOUT, 'SetAccent_'),
-          ('Library', LIBRARY_OPTIONS, LIBRARY_SCREEN, LIBRARY_LAYOUT, 'SetLibrary_')]
+          ('Library', LIBRARY_OPTIONS, LIBRARY_SCREEN, LIBRARY_LAYOUT, 'SetLibrary_'), ('Hearing', HEARING_OPTIONS, HEARING_SCREEN, HEARING_LAYOUT, 'SetHearing_')]
 NG = len(GROUPS)
-NAMES = [('E_Theme_Screen', THEME_SCREEN), ('E_Theme_Layout', THEME_LAYOUT), ('E_Accent_Screen', ACCENT_SCREEN), ('E_Accent_Layout', ACCENT_LAYOUT),
-         ('E_Library_Screen', LIBRARY_SCREEN), ('E_Library_Layout', LIBRARY_LAYOUT),
-         ('E_Settings_Theme_Layout', PREVIEW_LAYOUT[0]), ('E_Settings_Accent_Layout', PREVIEW_LAYOUT[1]), ('E_Settings_Library_Layout', PREVIEW_LAYOUT[2])]
+ROWS = [g[0] for g in GROUPS]                             # Settings rows; + ['Debug'] adds Apple's Debug menu (its Unit Tests asserts)
+NR = len(ROWS)
+DEBUG_PUSH = (b'Debug_MainMenu_Screen', b'Debug_MainMenu_Screen_Default')
+KEYS = ['Theme', 'Accent', 'Library', 'Hearing', 'Debug']
+NAMES = [('E_%s_Screen' % KEYS[g], GROUPS[g][2]) for g in range(NG)] + [('E_%s_Layout' % KEYS[g], GROUPS[g][3]) for g in range(NG)] + \
+        [('E_Settings_%s_Layout' % KEYS[r], PREVIEW_LAYOUT[r]) for r in range(NR)]
+def name_of(pid): return [n for n, p in NAMES if p == pid][0].encode()
 NAMES_TABLE, NAMES_COUNT, NAMES_NEW_COUNT = 0x083f8728, 3920, 3936   # 3936 = 0xf60, an ARM immediate
 
 def cstr(a):
@@ -73,10 +78,9 @@ def new_sorc(*entries):
 
 # ---- Str ----
 def new_str(pid, text): add('Str ', pid, text.encode() + b'\0')
-for k, (label, *_ ) in enumerate(GROUPS): new_str(STR_LABEL[k], label)
-for k, s in enumerate(THEME_OPTIONS): new_str(STR_THEME0 + k, s)
-for k, s in enumerate(ACCENT_OPTIONS): new_str(STR_ACCENT0 + k, s)
-for k, s in enumerate(LIBRARY_OPTIONS): new_str(STR_LIBRARY0 + k, s)
+for k, label in enumerate(ROWS): new_str(STR_LABEL[k], label)
+for g in range(NG):
+    for k, s in enumerate(GROUPS[g][1]): new_str(STR0[g] + k, s)
 
 # ITEM: {count, {size 0x98, 0, payload}}; payload +0x30 pid, +0x5c index, +0x60 kind, +0x68 SORC
 def item_rows(item):
@@ -95,18 +99,21 @@ def row_clone(row, pid, index, sorc_id):
 main_rows = item_rows(res('ITEM', 0x41))
 backlight_main_row = [r for r in main_rows if w32(r, 8 + 0x30) == BACKLIGHT_ROW][0]
 assert w32(backlight_main_row, 8 + 0x60) == 5                      # kind 5: opens a submenu
-label_sorc = [new_sorc((0x80, STR_LABEL[k], 1)) for k in range(NG)]
-main_rows += [row_clone(backlight_main_row, ROW_PID[k], len(main_rows) + k, label_sorc[k]) for k in range(NG)]
+label_sorc = [new_sorc((0x80, STR_LABEL[k], 1)) for k in range(NR)]
+main_rows += [row_clone(backlight_main_row, ROW_PID[k], len(main_rows) + k, label_sorc[k]) for k in range(NR)]
 inplace[('ITEM', 0x41)] = item_build(main_rows)
 sub_row = item_rows(res('ITEM', 0x44))[0]                            # Backlight submenu row, kind 2
 assert w32(sub_row, 8 + 0x60) == 2
+clicker_row = [r for r in main_rows if w32(r, 8 + 0x30) == 0x0dad0c3b][0]   # Settings > Clicker: kind 12, value text in SORC role 10
+assert w32(clicker_row, 8 + 0x60) == 12
 option_pids = []
 for g, (label, options, scr, lay, action) in enumerate(GROUPS):
     rows, pids = [], []
+    value_rows = scr == HEARING_SCREEN
     for k, text in enumerate(options):
         pid = 0x0dad0f90 + 8 * g + k
-        sid = new_sorc((0x80, STR0[g] + k, 1), (0x8900, KEY_CHECK[g] + k, 0xc))
-        rows.append(row_clone(sub_row, pid, k, sid)); pids.append(pid)
+        sid = new_sorc((0x80, STR0[g] + k, 1), (0x8900, KEY_CHECK[g] + k, 10 if value_rows else 0xc))
+        rows.append(row_clone(clicker_row if value_rows else sub_row, pid, k, sid)); pids.append(pid)
     add('ITEM', ITEM_ID[g], item_build(rows)); option_pids.append(pids)
 
 # CEVT: {count, {str name, u8 flag, str action, {count, {str cmd, {count, str arg}}}}}
@@ -134,9 +141,12 @@ def cevt_build(events):
     return out
 main_events = cevt_parse(res('CEVT', SCREEN))
 assert cevt_build(main_events) == res('CEVT', SCREEN)
+assert all(byname[n.decode()] for n in DEBUG_PUSH)
+for r in range(NR):
+    push = [name_of(GROUPS[r][2]), name_of(GROUPS[r][3])] if r < NG else list(DEBUG_PUSH)
+    main_events.append((b'list.pid.%d.chosen' % ROW_PID[r], 0x31, b'', [(b'navigator.PushScreen', push)]))
+    main_events.append((b'list.pid.%d.delayedselected' % ROW_PID[r], 0x31, b'', [(b'navigator.SwitchLayout', [name_of(PREVIEW_LAYOUT[r])])]))
 for g, (label, options, scr, lay, action) in enumerate(GROUPS):
-    main_events.append((b'list.pid.%d.chosen' % ROW_PID[g], 0x31, b'', [(b'navigator.PushScreen', [NAMES[2 * g][0].encode(), NAMES[2 * g + 1][0].encode()])]))
-    main_events.append((b'list.pid.%d.delayedselected' % ROW_PID[g], 0x31, b'', [(b'navigator.SwitchLayout', [NAMES[2 * NG + g][0].encode()])]))
     add('CEVT', scr, cevt_build([(b'list.pid.%d.chosen' % pid, 0x31, b'%s%d' % (action.encode(), k), []) for k, pid in enumerate(option_pids[g])]))
 inplace[('CEVT', SCREEN)] = cevt_build(main_events)
 
@@ -153,7 +163,7 @@ for g, (label, options, scr, lay, action) in enumerate(GROUPS):
     add('VSlt', scr, patched(vslt, 16, ITEM_ID[g]))
 main_slst = res('SLst', SCREEN)
 assert w32(main_slst, 0) == 19 and len(main_slst) == 4 + 19 * 20
-inplace[('SLst', SCREEN)] = patched(main_slst, 0, 19 + NG) + b''.join(patched(slst_entry[4:], 8, PREVIEW_LAYOUT[g]) for g in range(NG))
+inplace[('SLst', SCREEN)] = patched(main_slst, 0, 19 + NR) + b''.join(patched(slst_entry[4:], 8, PREVIEW_LAYOUT[r]) for r in range(NR))
 
 # layouts: SEVT (no events), SLyt -> canvas; canvases: VCrv, SSin of 4 sub-instances
 slyt = res('SLyt', BACKLIGHT_LAYOUT)
@@ -169,10 +179,14 @@ assert w32(statusbar_vcvs, 8) == STATUSBAR_TEXT and len(statusbar_vcvs) == 28
 settings_title_sorc = w32(res('VCvs', 0x373), 24)                   # the Settings layouts' status-bar title
 assert res('Str ', w32(res('SORC', settings_title_sorc), 16)) == b'Settings\0'
 title_sorc = [new_sorc((0x80, STR_LABEL[g], 1)) for g in range(NG)]
-layouts = [(THEME_LAYOUT, CANVAS[0], title_sorc[0], 0), (ACCENT_LAYOUT, CANVAS[1], title_sorc[1], 1),
-           (PREVIEW_LAYOUT[0], CANVAS[2], settings_title_sorc, 0), (PREVIEW_LAYOUT[1], CANVAS[3], settings_title_sorc, 1),
-           (LIBRARY_LAYOUT, CANVAS[4], title_sorc[2], 2), (PREVIEW_LAYOUT[2], CANVAS[5], settings_title_sorc, 2)]
-INST = [INST0 + 4 * n for n in range(4)] + [0x45e, 0x462]   # sub-instance ids per canvas
+# (layout, canvas, status-bar title, info pane); VCrv ids are dense, so each canvas and sub-instance takes the next free id
+layouts = [(THEME_LAYOUT, 0x448, title_sorc[0], 0), (ACCENT_LAYOUT, 0x449, title_sorc[1], 1),
+           (PREVIEW_LAYOUT[0], 0x44a, settings_title_sorc, 0), (PREVIEW_LAYOUT[1], 0x44b, settings_title_sorc, 1),
+           (LIBRARY_LAYOUT, 0x45c, title_sorc[2], 2), (PREVIEW_LAYOUT[2], 0x45d, settings_title_sorc, 2),
+           (HEARING_LAYOUT, 0x466, title_sorc[3], 3), (PREVIEW_LAYOUT[3], 0x467, settings_title_sorc, 3)]
+if NR > NG: layouts.append((PREVIEW_LAYOUT[NG], 0x468, settings_title_sorc, NG))
+NEW0 = 0x466 + len(layouts) - 6                                     # the first sub-instance after the canvases from 0x466
+INST = [INST0 + 4 * n for n in range(4)] + [0x45e, 0x462] + [NEW0 + 4 * n for n in range(len(layouts) - 6)]   # sub-instance ids per canvas
 for n, (lay, canvas, title, g) in enumerate(layouts):
     add('SEVT', lay, b'\0\0\0\0')
     add('SLyt', lay, patched(slyt, 12, canvas))
@@ -192,13 +206,13 @@ vlyt = res('VLyt', MAINMENU_PREVIEW)
 assert res('TEVT', MAINMENU_PREVIEW) == b'\0\0\0\0'
 cors = [i + 4 for i in range(0, len(vlyt) - 4, 4) if w32(vlyt, i) == 0x534f5243]   # the SORC id follows each 'SORC' tag
 assert len(cors) == 3, cors
-ICONS = (byname['Settings_Brightness_Image'], byname['Settings_MainMenu_Image'], byname['Settings_MainMenu_Image'])
-for g in range(NG):
+ICONS = [byname[n] for n in ('Settings_Brightness_Image', 'Settings_MainMenu_Image', 'Settings_MainMenu_Image', 'Settings_VolumeLimit_Image', 'Settings_Legal_Image')]
+for r in range(NR):
     v = bytearray(vlyt)
-    for off, sid in zip(cors, (new_sorc((0x80, STR_LABEL[g], 1)), new_sorc((0x80, ICONS[g], 1)), new_sorc((0x8900, KEY_TEXT[g], 1)))):
+    for off, sid in zip(cors, (new_sorc((0x80, STR_LABEL[r], 1)), new_sorc((0x80, ICONS[r], 1)), new_sorc((0x8900, KEY_TEXT[r], 1)))):
         struct.pack_into('<I', v, off, sid)
-    add('VLyt', PREVIEW_VLYT[g], bytes(v))
-    add('TEVT', PREVIEW_VLYT[g], b'\0\0\0\0')
+    add('VLyt', PREVIEW_VLYT[r], bytes(v))
+    add('TEVT', PREVIEW_VLYT[r], b'\0\0\0\0')
 
 # index: per type, Apple's table plus our entries; mkpatch18.py fills in the offsets
 def type_record_addr(t): return PKG + 12 + 16 * list(pkg.types).index(t)
@@ -242,9 +256,9 @@ with open(sys.argv[2], 'w') as f:
     f.write('/* generated by host/gen_settings.py from the OS Settings resources; do not edit */\n')
     f.write('#define SETTINGS_SCREEN 0x%08x\n#define SETTINGS_LAYOUT 0x%08x\n' % (SCREEN, SCREEN_LAYOUT))
     f.write('#define THEME_SCREEN 0x%08x\n#define THEME_LAYOUT 0x%08x\n#define ACCENT_SCREEN 0x%08x\n#define ACCENT_LAYOUT 0x%08x\n' % (THEME_SCREEN, THEME_LAYOUT, ACCENT_SCREEN, ACCENT_LAYOUT))
-    f.write('#define LIBRARY_SCREEN 0x%08x\n#define LIBRARY_LAYOUT 0x%08x\n' % (LIBRARY_SCREEN, LIBRARY_LAYOUT))
-    f.write('#define KEY_THEME_TEXT 0x%x\n#define KEY_ACCENT_TEXT 0x%x\n#define KEY_LIBRARY_TEXT 0x%x\n#define KEY_THEME_CHECK 0x%x\n#define KEY_ACCENT_CHECK 0x%x\n#define KEY_LIBRARY_CHECK 0x%x\n' % (KEY_TEXT + KEY_CHECK))
-    f.write('#define N_THEME_OPTIONS %d\n#define N_ACCENT_OPTIONS %d\n#define N_LIBRARY_OPTIONS %d\n' % (len(THEME_OPTIONS), len(ACCENT_OPTIONS), len(LIBRARY_OPTIONS)))
+    f.write('#define LIBRARY_SCREEN 0x%08x\n#define LIBRARY_LAYOUT 0x%08x\n#define HEARING_SCREEN 0x%08x\n#define HEARING_LAYOUT 0x%08x\n' % (LIBRARY_SCREEN, LIBRARY_LAYOUT, HEARING_SCREEN, HEARING_LAYOUT))
+    for k, key in enumerate(KEYS): f.write('#define KEY_%s_TEXT 0x%x\n' % (key.upper(), KEY_TEXT[k]))
+    for g in range(NG): f.write('#define KEY_%s_CHECK 0x%x\n#define N_%s_OPTIONS %d\n' % (KEYS[g].upper(), KEY_CHECK[g], KEYS[g].upper(), len(GROUPS[g][1])))
     f.write('#define SETTINGS_NAMES_COUNT %d\n' % NAMES_NEW_COUNT)
     f.write('/* submenu rows: action -> (group, option) */\n')
     f.write('static const struct { const char *action; uint8_t group, option; } settings_actions[%d] = {\n' % sum(len(g[1]) for g in GROUPS))

@@ -442,6 +442,7 @@ static void __attribute__((used)) lcdinit_c(uint32_t *r)
     { void prof_mark(const char *); prof_mark("lcd init"); }
 #endif
     theme_lcd = (void *)r[0];
+    { void power_trail(uint32_t); power_trail('lcdi'); }   /* DIAG */
     power_resume_check();
 }
 __attribute__((naked, section(".text.entry"), used)) void hk_uiinit(void)
@@ -1150,10 +1151,17 @@ static void modern_bars(int mode, const uint8_t *acc)
    written only while it still holds the other style's value, and Classic puts Apple's back. */
 #define T_VIEW FOURCC('V', 'i', 'e', 'w')
 #define T_VLYT FOURCC('V', 'L', 'y', 't')
+#define T_FONT FOURCC('F', 'O', 'N', 'T')
 static const struct { uint32_t type, id, off, old, now; } np_layout[] = {
     { T_VIEW, 0x0dad088e, 0x490, 0x0000007d, 0x0000012c },
     { T_VIEW, 0x0dad088e, 0x50c, 0x00000090, 0x0000012c },
-    { T_VLYT, 0x0dad089a, 0x160, 0x00000090, 0x0000012c }
+    { T_VLYT, 0x0dad089a, 0x160, 0x00000090, 0x0000012c },
+    { T_FONT, 0x0dad0012, 0x004, 75, 92 },                /* title font size (1/5 px) */
+    { T_FONT, 0x0dad0014, 0x004, 58, 70 },                /* artist and album ("..." queued: uifast.c) */
+    { T_VIEW, 0x0dad088e, 0x2d4, 68, 64 },                /* title, artist, album: top */
+    { T_VIEW, 0x0dad088e, 0x368, 89, 88 },
+    { T_VIEW, 0x0dad088e, 0x3fc, 107, 109 },
+    { T_VLYT, 0x0dad089a, 0x0f4, 107, 109 }
 };
 static void modern_np_layout(int modern)
 {

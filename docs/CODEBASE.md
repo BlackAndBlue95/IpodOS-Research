@@ -218,6 +218,13 @@ our decoder (Init and DecodeNext replaced in a copy of the PCM decoder's vtable)
 SEEKTABLE, else bisect on frame headers. Rates above 48 kHz are decimated (64/128-tap FIR); 24-bit
 is TPDF-dithered to 16. Truncated files end at the last whole frame.
 
+Hearing (`runtime/flac/hearing.c`, settings in Settings > Hearing): with any filter on, frames go to
+24-bit, through loudness shelves (ISO 226:2003 contour differences fitted by `host/gen_loudness.py`),
+ear-fatigue dynamic cuts at 3.15/7.5 kHz, bs2b crossfeed and the loud limit (A-weighted block level
+against 75..100 dB SPL), then dither to 16; all off is bit-exact. The SPL estimate is the codec's
+headphone gain (volume byte at `0x089d0ef6`, formula of `0x08088bc4`) plus a headphone sensitivity.
+The ITU-T H.870 dose is booked per day in `FLAC\dose.txt` (`runtime/dose.c`).
+
 Trace words `TR(n)` (see the legends in `art.c` and `flacblob.c`) are debug counters dumped to
 `FLAC\flaclogXY.bin` only when `FLAC\debug.txt` exists. Known: the `art.c` legend is stale for
 TR2/TR6/TR7 (TR2 is decode time, TR6 low byte rc and high half KB read, TR7 read ticks).
@@ -325,11 +332,19 @@ added with a warning. `tools/qemu/videotest.py` checks playback end to end in th
 
 ## 9. Settings rows (`runtime/host/gen_settings.py`, `runtime/settings.c`)
 
-Theme, Accent Colour and Library rows are cloned from Apple's own Settings records (Backlight row,
-Radio Regions canvases), added to a relocated copy of the resource index and name table (3920 →
+Theme, Accent Colour, Library and Hearing rows are cloned from Apple's own Settings records (Backlight
+row, Radio Regions canvases), added to a relocated copy of the resource index and name table (3920 →
 3936 names). Two vtable slots route actions (`e_settings_action`) and row text/checkmarks
 (`e_settings_provider`). Library: "Sync library now" (restart; the boot syncs) and "Power state to
-log". Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, optional `city=`).
+log". Hearing rows are value rows cloned from Clicker (kind 12, value text in SORC role 10). A Debug
+row pushing Apple's `Debug_MainMenu_Screen` is available (`ROWS` in the generator) but off: its Unit
+Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, `limit=`,
+`loudness=`, `fatigue=`, `crossfeed=`, `phones=`, optional `city=`).
+
+Our restarts reset by watchdog without unmounting, so writes still in the FAT driver's cache are
+lost (a new `iTunesDB`'s cluster chain was, after a crash); write nothing right before a reset.
+Apple's own restart (`0x081db3c8`) unmounts volume 0 first, but its unmount waits without limit for
+the volume's other users.
 
 ## 10. Power and hibernate (`runtime/power.c`)
 

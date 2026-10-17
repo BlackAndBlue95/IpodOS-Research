@@ -20,6 +20,7 @@ struct File { const struct FileVT *vt; };
 #include "rbflac.h"
 #include "rbfir.h"
 #include "fir.h"
+#include "hearing.h"
 void crumb(const char *name);                /* DIAG (log.c) */
 #define CRUMB() crumb(__func__)
 
@@ -652,6 +653,7 @@ typedef struct {
     uint64_t next_sample;
     uint32_t t_init, t_last, ticks;
     int first_done;
+    HEAR hear; int32_t *wbuf; int wcap;
 } FD;
 static FD fd;
 
@@ -690,13 +692,22 @@ static inline int16_t sat16(int32_t v)
     if (v < -32768) return -32768;
     return (int16_t)v;
 }
+/* TPDF dither, +-1 LSB, then round away sh bits */
+static inline int16_t dith(FD *d, int32_t v, int sh)
+{
+    uint32_t m = (1u << sh) - 1, a, b;
+    d->rng = d->rng * 1664525u + 1013904223u; a = (d->rng >> 8) & m;
+    d->rng = d->rng * 1664525u + 1013904223u; b = (d->rng >> 8) & m;
+    return sat16((v + (int32_t)(a + b) - (int32_t)m + (1 << (sh - 1))) >> sh);
+}
 
 /* decode one frame (packet) into d->pcm; 1 ok, 0 bad frame */
 static int fd_decode(FD *d, const uint8_t *ptr, int len)
 {
     rbflac_frame h;
-    int r, bs, i, c, och = d->och, n = 0;
+    int r, bs, i, c, och = d->och, n = 0, act;
     int16_t *o = d->pcm;
+    int32_t *w;
     uint32_t t0 = HTIMER, dt;
     {   /* the frame header gives the format: configure on the first frame and on any change */
         int sr, nch, bps, fbs, fixed;
@@ -723,22 +734,26 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
     if (r <= 0) { TR(45) = ((TR(45) + 1) & 0xffff) | (uint32_t)(-r & 0xff) << 16; return 0; }
     o = d->pcm;                          /* allocated above, possibly just now */
     bs = h.blocksize;
+    act = hear_prepare(&d->hear, d->sr / d->dec, och);
+    if (act && d->wcap < bs * och) {     /* 24-bit samples for the hearing filters */
+        if (d->wbuf) os_free(d->wbuf);
+        d->wcap = (d->wbuf = os_malloc(bs * och * 4 + 16)) ? bs * och : 0;
+        if (!d->wbuf) act = 0;
+    }
+    w = d->wbuf;
     if (h.sample != d->next_sample) {      /* a jump (seek or lost frame): the filter starts over */
         for (c = 0; c < 2; c++) memset(d->hist[c], 0, 2 * FIRMAX * 4);
         d->hpos = 0;
+        hear_reset(&d->hear);
     }
     if (d->dec == 1) {
-        int sh = d->bps - 16;
+        int sh = d->bps - 16, s24 = 24 - d->bps;
         for (i = 0; i < bs; i++)
             for (c = 0; c < och; c++) {
                 int32_t v = d->dec_buf[c][i];
-                if (sh > 0) {   /* TPDF dither, +-1 LSB, then round */
-                    uint32_t m = (1u << sh) - 1, a, b;
-                    d->rng = d->rng * 1664525u + 1013904223u; a = (d->rng >> 8) & m;
-                    d->rng = d->rng * 1664525u + 1013904223u; b = (d->rng >> 8) & m;
-                    v = (v + (int32_t)(a + b) - (int32_t)m + (1 << (sh - 1))) >> sh;
-                } else if (sh < 0) v <<= -sh;
-                o[n++] = sat16(v);
+                if (act) w[n++] = s24 >= 0 ? v << s24 : v >> -s24;
+                else if (sh > 0) o[n++] = dith(d, v, sh);
+                else o[n++] = sat16(sh < 0 ? v << -sh : v);
             }
         d->pend_out = h.sample;
         d->pend_n = bs;
@@ -758,6 +773,7 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
                     const int32_t *x = d->hist[c] + hp;  /* oldest..newest */
                     int64_t acc = rbfir_dot(d->rfir, x);
                     uint32_t a, b;   /* TPDF dither, +-1 output LSB (2^23) */
+                    if (act) { w[n++] = (int32_t)((acc + (1 << 14)) >> 15); continue; }
                     d->rng = d->rng * 1664525u + 1013904223u; a = d->rng >> 9;
                     d->rng = d->rng * 1664525u + 1013904223u; b = d->rng >> 9;
                     acc += (int64_t)a + b - (1 << 23);
@@ -768,6 +784,11 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
         d->pend_out = (s0 + D - 1) / D;
         d->pend_n = n / och;
     }
+    if (act) {
+        hear_run(&d->hear, w, n / och);
+        for (i = 0; i < n; i++) o[i] = dith(d, w[i], 8);
+    }
+    hear_meter(&d->hear, o, n / och);
     d->pend_pos = 0;
     d->next_sample = h.sample + bs;
     dt = HTIMER - t0;

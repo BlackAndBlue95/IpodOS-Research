@@ -100,6 +100,7 @@ E_ENTRY void *e_fbcopy(uint8_t *dst, const uint8_t *src, uint32_t n)
 {
     int s = (uint32_t)src == fb_pix[0] ? 0 : (uint32_t)src == fb_pix[1] ? 1 : -1, d = 1 - s;
     uint32_t c;
+    { void power_trail_frame(void); power_trail_frame(); }   /* DIAG: frames after a resume */
     if (fb_off || s < 0 || (uint32_t)dst != fb_pix[d] || n != fb_pix[2] || !fb_stride || fb_unknown || n % fb_stride) {
         if (!fb_off) {                                 /* (re)start tracking; rects drawn during the copy count */
             c = fb_irq_off();

@@ -140,11 +140,27 @@ static int pb_glyph_some(uint8_t *b, uint32_t mask)
     wr32(b + 0x120, rd32(b + 0x120) + ((uint32_t (*)(int))0x0826a4e4)(0));   /* per-font-file step, as the pass ends */
     return 1;
 }
+/* "..." into every TrueType font's pending set (renderer +0x8c: {bits, -, words}): a truncated line
+   needs it, and a size no list uses (Modern Now Playing) would never render it */
+static void glyphs_want_ellipsis(void)
+{
+    void **list = *(void ***)0x089cc8dc;
+    uint32_t n, i, *bs;
+    if (!list) return;
+    n = ((uint32_t *)list)[1];
+    for (i = 0; i < n && i < 64; i++) {
+        uint8_t *e = 0, *f;
+        if (!((int (*)(void *, uint32_t, void *))(*(void ***)list)[0x3c / 4])(list, i, &e) || !e) continue;
+        if (!(f = *(uint8_t **)(e + 0x98)) || rd32(f) != 0x08983e84) continue;
+        if ((bs = *(uint32_t **)(f + 0x8c)) && bs[0] > 0x2026) ((uint32_t *)bs[2])[0x2026 >> 5] |= 1u << (0x2026 & 31);
+    }
+}
 static void __attribute__((used)) pb_glyphs_now(uint8_t *b)
 {
     uint32_t rc_drive_ms(void);
     uint32_t tg = TIMER_E, dg = rc_drive_ms();
     int some;
+    glyphs_want_ellipsis();
     wr32(b + 0x11c, 0);
     if (!(some = pb_glyph_some(b, BOOT_GLYPHS))) ((int (*)(void *, int, int))0x081ae8c4)(b, 0, 0);
     wr32(b + 0x11c, 0);
@@ -159,6 +175,7 @@ uint32_t first_frame_us;                 /* libload.c */
 static void __attribute__((used)) pb_tick_c(void)
 {
     void art_showcase_late(void);
+    glyphs_want_ellipsis();              /* fonts made by the screens built since */
     if (first_frame_us && TIMER_E - first_frame_us > 500000) art_showcase_late();   /* menu art pane covers (art.c) */
 }
 __attribute__((naked, section(".text.entry"), used)) void e_prebuild_yield(void)

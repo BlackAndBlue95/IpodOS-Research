@@ -1,10 +1,11 @@
-/* Settings menu rows (Theme, Accent Colour, Library), their submenus, the settings file and the
- * sunset/sunrise switch. Menu resources come from host/gen_settings.py (settings_data.h).
+/* Settings menu rows (Theme, Accent Colour, Library, Hearing), their submenus, the settings file and
+ * the sunset/sunrise switch. Menu resources come from host/gen_settings.py (settings_data.h).
  * Theme, accent and style changes apply live (switch_live); only Modern's font waits for a restart. */
 #include "e.h"
 #include "settings_data.h"
 #include "sun.h"
 #include "cities.h"
+#include "flac/hearing.h"
 
 #define FOURCC(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
 #define T_BMAP FOURCC('B', 'M', 'a', 'p')
@@ -51,13 +52,28 @@ extern int theme_style;       /* theme.c reads it while patching */
 static int applied = -1;      /* theme mode (0/1) the UI was built with */
 static int last_rise = -1, last_set = -1, last_tz, last_night;
 
+static const char *const fatigue_keys[4] = { "off", "gentle", "medium", "strong" };
+static const char *const limit_keys[7] = { "off", "75", "80", "85", "90", "95", "100" };
+static const char *const phones_keys[4] = { "earbuds", "inear", "overear", "highimp" };
+void dose_load(void);
+void dose_save(void);
+void dose_tick(void);
+const char *dose_text(void);
+
 static int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static int prefix(const char *s, const char *p) { while (*p) if (*s++ != *p++) return 0; return 1; }
 
 /* ---- settings file ---- */
+static int put_line(char *buf, int n, const char *key, const char *val)
+{
+    while (*key) buf[n++] = *key++;
+    while (*val) buf[n++] = *val++;
+    buf[n++] = '\n';
+    return n;
+}
 static void settings_save(void)
 {
-    char buf[96];
+    char buf[256];
     int n = 0;
     const char *p;
     for (p = "theme="; *p; p++) buf[n++] = *p;
@@ -72,6 +88,11 @@ static void settings_save(void)
         for (p = cities[settings_city].name; *p; p++) buf[n++] = *p;
         buf[n++] = '\n';
     }
+    n = put_line(buf, n, "limit=", limit_keys[hear_limit]);
+    n = put_line(buf, n, "loudness=", hear_loud ? "on" : "off");
+    n = put_line(buf, n, "fatigue=", fatigue_keys[hear_fatigue & 3]);
+    n = put_line(buf, n, "crossfeed=", hear_xfeed ? "on" : "off");
+    n = put_line(buf, n, "phones=", phones_keys[hear_phones & 3]);
     vol_delete("FLAC\\settings.txt");
     file_write("FLAC\\settings.txt", buf, n);
 }
@@ -92,6 +113,14 @@ static int settings_load(void)
         else if (prefix(buf + i, "style=classic")) settings_style = 0;
         else if (prefix(buf + i, "accent=")) {
             for (k = 0; k < 8; k++) if (prefix(buf + i + 7, accent_keys[k])) theme_accent = k;
+        } else if (prefix(buf + i, "loudness=")) hear_loud = prefix(buf + i + 9, "on");
+        else if (prefix(buf + i, "crossfeed=")) hear_xfeed = prefix(buf + i + 10, "on");
+        else if (prefix(buf + i, "fatigue=")) {
+            for (k = 0; k < 4; k++) if (prefix(buf + i + 8, fatigue_keys[k])) hear_fatigue = k;
+        } else if (prefix(buf + i, "limit=")) {
+            for (k = 0; k < 7; k++) if (prefix(buf + i + 6, limit_keys[k])) hear_limit = k;
+        } else if (prefix(buf + i, "phones=")) {
+            for (k = 0; k < 4; k++) if (prefix(buf + i + 7, phones_keys[k])) hear_phones = k;
         } else if (prefix(buf + i, "city=")) {
             /* optional override of the place used for sunrise/sunset (no menu row for it) */
             for (k = 0; k < NCITIES; k++) {
@@ -103,6 +132,7 @@ static int settings_load(void)
         }
     }
     theme_style = settings_style;
+    hear_gen++;
     return 1;
 }
 
@@ -227,6 +257,7 @@ void settings_boot(int final)
     file_loaded = settings_load();
     if (!file_loaded && !final) return;
     done = 1;
+    dose_load();
     if (boot_mode < 0) {
         /* the UI is not built yet: set everything up for it */
         int mode = effective_mode(settings_mode);
@@ -253,6 +284,22 @@ static void post_keys(void)
     os_post(obj, FOURCC('*', '*', '*', '*'), KEY_LIBRARY_TEXT);
     for (k = 0; k < N_THEME_OPTIONS; k++) os_post(obj, FOURCC('*', '*', '*', '*'), KEY_THEME_CHECK + k);
     for (k = 0; k < N_ACCENT_OPTIONS; k++) os_post(obj, FOURCC('*', '*', '*', '*'), KEY_ACCENT_CHECK + k);
+}
+static void post_hearing(void)
+{
+    void *obj = os_settings_obj();
+    int k;
+    os_post(obj, FOURCC('*', '*', '*', '*'), KEY_HEARING_TEXT);
+    for (k = 0; k < N_HEARING_OPTIONS; k++) os_post(obj, FOURCC('*', '*', '*', '*'), KEY_HEARING_CHECK + k);
+}
+/* Hearing rows' value text, drawn on the right as Clicker's On/Off is */
+static const char *hearing_value(int k)
+{
+    static const char *const limit[7] = { "Off", "75 dB", "80 dB", "85 dB", "90 dB", "95 dB", "100 dB" };
+    static const char *const fatigue[4] = { "Off", "Gentle", "Medium", "Strong" };
+    static const char *const phones[4] = { "Earbuds", "In-ear", "Over-ear", "Hi-Z" };
+    return k == 0 ? limit[hear_limit] : k == 1 ? (hear_loud ? "On" : "Off") : k == 2 ? fatigue[hear_fatigue & 3]
+         : k == 3 ? (hear_xfeed ? "On" : "Off") : phones[hear_phones & 3];
 }
 void os_restart(void);
 static void reboot(void) { os_restart(); }
@@ -301,6 +348,20 @@ E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
             return 1;
         }
         if (g == 2 && k == 1) { void power_state_log(const char *); power_state_log("asked"); log_flush(); return 1; }
+        if (g == 3) {                                        /* Hearing: the decoder picks the change up at its next frame */
+            if (k == 0) hear_limit = (hear_limit + 1) % 7;
+            else if (k == 1) hear_loud ^= 1;
+            else if (k == 2) hear_fatigue = (hear_fatigue + 1) & 3;
+            else if (k == 3) hear_xfeed ^= 1;
+            else hear_phones = (hear_phones + 1) & 3;
+            hear_gen++;
+            log_s("   settings: "); log_s(action); log_s(" -> limit "); log_s(limit_keys[hear_limit]); log_s(", loudness "); log_d(hear_loud);
+            log_s(", fatigue "); log_s(fatigue_keys[hear_fatigue]); log_s(", crossfeed "); log_d(hear_xfeed);
+            log_s(", phones "); log_s(phones_keys[hear_phones]); log_c('\n');
+            settings_save();
+            post_hearing();
+            return 1;
+        }
         if (g == 0 && k == 3) { settings_style ^= 1; theme_style = settings_style; }   /* "Modern style" (its font follows at the next start) */
         else if (g == 0) settings_mode = k; else theme_accent = k;
         log_s("   switch: action "); log_s(action); log_c('\n'); log_flush();
@@ -342,6 +403,12 @@ E_ENTRY int e_settings_provider(void *self, uint32_t type, uint32_t key, void **
     if (key == KEY_THEME_TEXT) { *out = (void *)theme_text(); return 1; }
     if (key == KEY_ACCENT_TEXT) { *out = (void *)accent_labels[theme_accent]; return 1; }
     if (key == KEY_LIBRARY_TEXT) { *out = (void *)sync_summary; return 1; }
+    if (key == KEY_HEARING_TEXT) { *out = (void *)dose_text(); return 1; }
+    if (key == KEY_DEBUG_TEXT) { *out = (void *)"Apple's diagnostics"; return 1; }
+    if (key >= KEY_HEARING_CHECK && key < KEY_HEARING_CHECK + N_HEARING_OPTIONS) {
+        if (type != T_BMAP) *out = (void *)hearing_value(key - KEY_HEARING_CHECK);
+        return 1;
+    }
     if (key >= KEY_LIBRARY_CHECK && key < KEY_LIBRARY_CHECK + N_LIBRARY_OPTIONS) return 1;   /* no checkmark */
     if (key >= KEY_THEME_CHECK && key < KEY_THEME_CHECK + N_THEME_OPTIONS) { g = 0; k = key - KEY_THEME_CHECK; }
     else if (key >= KEY_ACCENT_CHECK && key < KEY_ACCENT_CHECK + N_ACCENT_OPTIONS) { g = 1; k = key - KEY_ACCENT_CHECK; }
@@ -359,8 +426,10 @@ static int __attribute__((used)) tick_c(uint32_t *r)
 {
     static int noted = -1;
     (void)r;
+    { void power_trail(uint32_t); power_trail('tick'); }   /* DIAG */
     { void power_resume_check(void); power_resume_check(); }
     { void rtxcbug_tick(void); rtxcbug_tick(); }   /* FLAC\rtxcbug-tick.txt dumps (semihost.c) */
+    dose_tick();
     if (settings_mode == 2) {
         int m = is_night();
         if (m != applied && m != noted) {
