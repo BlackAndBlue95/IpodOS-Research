@@ -13,3 +13,5 @@ TRIM=""; [ -n "$3" ] && TRIM="-ss $3 -t ${4:?length}"
     -b:v 1200k -maxrate 1500k -bufsize 2000k \
     -c:a aac -b:a 128k -ar 44100 -ac 2 \
     -movflags +faststart -f mp4 "$OUT"
+# ffmpeg writes one sample per chunk; the iPod's player pops on that, so regroup into Apple's 0.5 s chunks
+python3 "$(dirname "$0")/rechunk.py" "$OUT"
