@@ -13,6 +13,16 @@ copied in from `EF-fonts-rsrc.img` (Z-rb's own firmware partition has no Modern 
 **Montages:** every image is two rows of 320x240 screens, Light on top, Dark underneath, in
 `docs/audit/`.
 
+**Fixed since in R122 (main checkout; reported by the main session, not re-checked here):**
+- The Stopwatch screens.
+- `Background_LightBlue_Image` is page-coloured in Light (the pane, lock, stopwatch and the other
+  slate screens).
+- `StatusBarBlack` bars and the Now Playing status bar take the page colour in Light, with black
+  battery ink. That covers #1's title bars and #17's About header.
+- The Light Now Playing background (#5 needs a fresh look against it).
+
+The Screen Lock combination slider (#11) is still glossy, which is known.
+
 **Effort key:**
 - **R**: colour or resource retheme in `runtime/theme*.c`
 - **I**: new SF icons or images (`tools/sf/gen_sficons.py`); needs a partition update
@@ -23,8 +33,8 @@ copied in from `EF-fonts-rsrc.img` (Z-rb's own firmware partition has no Modern 
 
 | # | Finding | Seen | Themes | Effort |
 |---|---|---|---|---|
-| 1 | Dark title bars (and the video HUD) with black text in Light | Video: every play. Others: weekly | Light broken | R |
-| 2 | Drop shadow between the menu and the preview pane, slate pane in Light | Every menu screen | both | R |
+| 1 | Dark title bars (and the video HUD) with black text in Light: **done in R122** (check the video HUD's bottom bar) | Video: every play. Others: weekly | Light broken | R |
+| 2 | Drop shadow between the menu and the preview pane (slate pane: **done in R122**) | Every menu screen | both | R |
 | 3 | Now Playing rating: Apple-blue stars, dots invisible in Light | Every rating | both | R |
 | 4 | Now Playing shuffle bar dark in Light, black glyphs in Dark | Every shuffle change, every Now Playing (glyphs) | both | R |
 | 5 | Now Playing accent title and scrubber low contrast in Light | Every Now Playing | Light | R |
