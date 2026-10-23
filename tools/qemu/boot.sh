@@ -15,6 +15,7 @@ if struct.unpack_from('<I', b, off)[0] == 0x159f4024: struct.pack_into('<I', b, 
 open(sys.argv[2], 'wb').write(b)
 PY
 cp "$DISK" "$Q/run/boot-disk.img"
-IPOD_SYSINFO=$Q/run/sysinfo-real.bin exec "$Q/src/build/qemu-system-arm" -M iPod-Classic \
+IPOD_SYSINFO=$Q/run/sysinfo-real.bin DYLD_FALLBACK_LIBRARY_PATH=$Q/deps-av/lib \
+    exec "$Q/src-joel/build/qemu-system-arm" -M iPod-Classic \
     -kernel "$Q/run/boot-emu.bin" -serial null -drive if=ide,format=raw,file="$Q/run/boot-disk.img" \
     -display cocoa -monitor unix:$Q/run/mon.sock,server,nowait

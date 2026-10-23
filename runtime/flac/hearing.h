@@ -18,6 +18,7 @@ typedef struct {
 
 /* settings (settings.c); hear_gen changes after each */
 extern int hear_loud, hear_fatigue, hear_xfeed, hear_limit, hear_phones;
+extern int hear_dither;                                       /* 24 to 16 bits: 1 noise-shaped, 0 plain TPDF */
 extern volatile uint32_t hear_gen;
 extern volatile uint32_t hear_dose_acc;                       /* dose in millionths of the weekly allowance, only grows */
 #define HEAR_LIMIT_DB(k) (70 + 5 * (k))                       /* hear_limit 1..6: 75..100 dB SPL */

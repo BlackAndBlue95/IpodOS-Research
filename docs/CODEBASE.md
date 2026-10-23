@@ -71,6 +71,30 @@ and Apple's load, so a stall names its stage (see "Boot screen" in section 9).
   characters for the background build's pass, which does one instance per tick. Without any boot pass
   the menu rows have no text. After a crash of the same build (`crash_prev`, crash.c) the next boot
   runs Apple's full pass.
+- **Text layout and kerning (`runtime/kern.c`, `--kern`).** The glyph pass renders each character
+  of a TrueType renderer (vtable `0x08983e84`) unhinted (`FT_Load_Glyph` flags 2) into an atlas and
+  keeps a 20-byte record per glyph: atlas x0/x1, rows, then s16 advance `+0xc` (the FreeType advance
+  rounded to whole pixels in `0x0828fc3c`), left `+0xe`, x offset `+0x10`, top `+0x12`. Text is laid
+  out one character at a time: measure loops (`0x0807031c`, `0x0807ca00`, `0x0809cbc8`, single
+  character `0x080702e8`) call `0x08076040`, draw loops (`0x0806c298`, `0x080e793c`, `0x080e7b8c`)
+  call `0x08069734`; both go through `0x080e2810` → `0x080a92f8` → renderer slot `0x24`, which copies
+  the record, and the pen moves by its advance. Apple's FreeType 2.3 reads only version 0 `kern`
+  tables (`0x08099dbc`); Apple's Helvetica carries an AAT version 1 table (105 pairs), so the stock
+  OS never kerns. `tools/sf/gen_font.py` writes SF Compact's GPOS pairs (Latin-1 and punctuation,
+  ≥ 20 units: 4531 Regular, 3959 Bold, +27 KB per file, held in the heap by FreeType) as a v0 table
+  into `Resources/ModernFonts`. With `--kern` slot `0x24` is `e_kern_glyph`: for faces with a kern
+  table, each glyph sits at the rounded exact pen (hmtx advance `0x080a7120` scaled by the size's
+  x_scale, plus `tt_face_get_kerning` `0x080a6fd4`), and its record's advance and left are rewritten
+  so measuring and drawing agree. The loops' first call (`bl 0x0809334c`) marks a new run. Apple's
+  fonts and the CJK fallbacks have no v0 table and keep the stock layout. Glyph bitmaps stay on whole
+  pixels: sub-pixel variants would multiply the atlas and the boot glyph pass.
+- **RGB565 dithering (`runtime/dither565.h`, `--dither`).** Region E's own 565 output uses a 16x16
+  blue-noise threshold (`host/gen_bluenoise.py`) instead of truncation or rounding: the Now Playing
+  background (built once per cover in 8.8 fixed point, the status bar fade included; full fade gives
+  exactly the bar's 565 colour), covers decoded by rbjpeg (Rockbox's `delta`), TJpgDec and the box
+  scaler, and re-themed 565 bitmaps whose luminance spans 8 or more (changed pixels only). All of it
+  runs when pixels are made, not per frame. Thumbnails already in `covers.db` keep the pixels they
+  were made with until their album's entry is rebuilt.
 - **Raw device handle and drive power.** Closing fatdir's block device lets storage power the drive
   down; the next write powers it up on the writing task: battery check (`0x08278aa0` → `0x082b1e54`),
   ATA reset pulse and drive supply (PMU register 0x52) with 10 + 10 + 50 ms sleeps (`0x082b1dec` →
@@ -218,7 +242,10 @@ A `.flac` is classified as WAV (type 3); the WAV parser hook `0x0828a5ac` attach
 the codec selector (IRAM `0x22005d60`, veneer word `0x22003824`) routes codec 2 with our marker to
 our decoder (Init and DecodeNext replaced in a copy of the PCM decoder's vtable). Seeks use the
 SEEKTABLE, else bisect on frame headers. Rates above 48 kHz are decimated (64/128-tap FIR); 24-bit
-is TPDF-dithered to 16. Truncated files end at the last whole frame.
+goes to 16 through `flac/nsdither.h`: TPDF dither (xorshift32) under a 9-tap error-feedback noise
+shaper at 44.1/48 kHz output (plain TPDF at other rates, or with `dither=tpdf`), filters from
+`host/gen_nsdither.py`, measured by `host/dither_test.py`. 16-bit sources with Hearing off pass
+through bit-exact. Truncated files end at the last whole frame.
 
 Hearing (`runtime/flac/hearing.c`, settings in Settings > Hearing): with any filter on, frames go to
 24-bit, through loudness shelves (ISO 226:2003 contour differences fitted by `host/gen_loudness.py`),
@@ -341,7 +368,7 @@ row, Radio Regions canvases), added to a relocated copy of the resource index an
 log". Hearing rows are value rows cloned from Clicker (kind 12, value text in SORC role 10). A Debug
 row pushing Apple's `Debug_MainMenu_Screen` is available (`ROWS` in the generator) but off: its Unit
 Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, `limit=`,
-`loudness=`, `fatigue=`, `crossfeed=`, `phones=`, optional `city=`).
+`loudness=`, `fatigue=`, `crossfeed=`, `phones=`, `dither=shaped|tpdf` (no menu row), optional `city=`).
 
 ### Disk access rules
 
@@ -401,7 +428,9 @@ init; nothing is drawn after USB sessions.
   files (`tools/sf/rsrc_tree.py` assembles it) to Apple's, growing the volume in place
   (`rsrcvol.py`: Apple's files keep their clusters) and moving the later sections up by the growth.
   It is a one-time rewrite of the whole partition (dump, `fwpart.py rsrc`, `fwpart.py add`, `dd`),
-  then images go on through `/osos-update.dec` as before.
+  then images go on through `/osos-update.dec` as before. For same-size file swaps (the kerned
+  ModernFonts, 2026-10-23) only the volume's changed blocks and the rsrc checksum were written:
+  `fwpart.py rsrc` rounds `len` from `entryOff + volume` and would move the later sections by 4 KB.
 - Self-update: copy a new image to `/osos-update.dec`; at boot it is validated, written in 64 KB
   chunks through the block device class, read back and compared, the directory entry updated, the
   file renamed to `osos-update.done`, then a watchdog restart. A marker (`FLAC\update.try`) stops a
@@ -447,6 +476,7 @@ Tests (no iPod needed):
 - `python3 libsync/mkmirror_db.py <iTunesDB> <dir>` then `python3 libsync/test_incr.py <dir> <work> <iTunesDB>`
 - `python3 libsync/test_fatdir.py <work>`; `libsync/libsync-host --verify <iTunesDB>`
 - `runtime/host/rules_parity.py`, `runtime/host/sun_test.c`, `runtime/flac/hostr.c` (decoder on the Mac)
+- `runtime/host/dither_test.c` + `dither_test.py BIN_DIR OUT_DIR` (requantiser spectra; numpy, scipy, matplotlib)
 
 The device log is `FLAC\rtlog.txt` (previous run in `rtlog.prev.txt`).
 

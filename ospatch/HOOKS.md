@@ -124,6 +124,13 @@ role 0xc}; role 0xc is asked for as a BMap and gets Settings_MainMenu_CheckmarkB
 | `--fast-prims` | 0x0829bcc0, 0x0828f9cc | `bl 0x0829a010` / `bl 0x0829a020` | `bl hk_bsscan7` / `bl hk_bsscansl` | the glyph-bitset loops' per-bit test moves the loop index (r5) to the next set bit |
 | `--ft-raster` | 0x0890d914, 0x0890d950 (raster_class of the "smooth" / "smooth-lcd" renderer classes) | 0x0890d8c4 | `ft_grays_raster` | FreeType 2.14.3's ftgrays (runtime/ft) instead of the OS's 2007-era one; cells in the library's render pool from raster_reset, as before |
 
+## Text and gradients (optional)
+| Flag | Addr | Stock | Patched | Purpose |
+|---|---|---|---|---|
+| `--kern` | 0x08983ea8 (TrueType renderer vtable 0x08983e84, slot 0x24) | 0x0828f948 | `e_kern_glyph` | glyph metrics record from the cache, then (only when called from 0x080a93e4 and the face has a v0 `kern` table) advance and left bearing set from the exact hmtx advance plus pair kerning, glyphs at the rounded exact pen |
+| `--kern` | 0x08070300, 0x0807033c, 0x0807ca1c, 0x0809cbf4, 0x0806c2c0, 0x080e7960, 0x080e7bb4 | `bl 0x0809334c` | `bl e_kern_run` | the text measure and draw loops' first call: a new run starts (the single-character measure 0x080702e8 keeps stock advances) |
+| `--dither` | `dither565` in E (bss word) | 0 | 1 | region E's RGB565 output dithered with a 16x16 blue-noise tile: Now Playing background, decoded covers (rbjpeg, TJpgDec, box scaling), re-themed 565 gradient bitmaps |
+
 Region E never writes CLKCON1 or the core voltage; it asks for speed through the OS's hold API
 (0x0802d060 → IRAM 0x2200441c). `osos_boot` v12c hands over Apple's clock gating
 (PWRCON0 0x2007cd45, PWRCON1 0x0003efc9, CLKCON2/3 0x80008000, CLKCON4/5 0x00008000).

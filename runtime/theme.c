@@ -4,6 +4,7 @@
 #include "e.h"
 #include "theme_rules.h"
 #include "theme_data.h"
+#include "dither565.h"
 
 #define FOURCC(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
 #define T_BMAP FOURCC('B', 'M', 'a', 'p')
@@ -255,12 +256,14 @@ static uint8_t *bmap_themed(const uint8_t *src, uint32_t size, int cls, const ui
             uint32_t c = d[0x1c + y * stride + 2 * x] | d[0x1c + y * stride + 2 * x + 1] << 8;
             stat_px(&s, (c >> 11) << 3, ((c >> 5) & 63) << 2, (c & 31) << 3, 255);
         }
+        int dith = dither565 && s.lmax - s.lmin >= 8;        /* gradients: changed pixels dithered */
         for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
             uint8_t *p = d + 0x1c + y * stride + 2 * x;
             uint32_t c = p[0] | p[1] << 8;
-            uint8_t rgb[3] = { (c >> 11) << 3, ((c >> 5) & 63) << 2, (c & 31) << 3 };
+            uint8_t rgb[3] = { (c >> 11) << 3, ((c >> 5) & 63) << 2, (c & 31) << 3 }, in[3] = { rgb[0], rgb[1], rgb[2] };
             theme_px(rgb, 255, cls, &s, acc, mode);
-            c = (rgb[0] >> 3) << 11 | (rgb[1] >> 2) << 5 | rgb[2] >> 3;
+            if (dith && (rgb[0] != in[0] || rgb[1] != in[1] || rgb[2] != in[2])) c = dith565(rgb[0], rgb[1], rgb[2], dith_t(x, y));
+            else c = (rgb[0] >> 3) << 11 | (rgb[1] >> 2) << 5 | rgb[2] >> 3;
             p[0] = c; p[1] = c >> 8;
         }
     }

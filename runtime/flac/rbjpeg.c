@@ -24,13 +24,15 @@
  *    HAVE_UPSCALER.  Generic C IDCTs (Rockbox's ARM .S file is not used).
  *  - All state lives in the caller's work buffer (no statics).
  *  - Scaler: alpha channel dropped, callbacks replaced by direct calls,
- *    output row writes RGB565 LE with Rockbox's rounding (no dither).
+ *    output row writes RGB565 LE with Rockbox's rounding, or dithered
+ *    (dither565.h).
  *  - Extra input validation (see comments marked "port:").
  ****************************************************************************/
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "rbjpeg.h"
+#include "dither565.h"
 
 /* provided by the blob / libc */
 void *memset(void *s, int c, size_t n);
@@ -1470,12 +1472,15 @@ static void pad_row(uint8_t *dest, int used, int stride)
         dest[used] = 0;
 }
 
-static inline void put565(uint8_t *dest, unsigned r, unsigned g, unsigned b)
+/* port: dither threshold for (x, y), or Rockbox's 127 (no dither) */
+#define DELTA(x, y) (dither565 ? dith_t(x, y) : 127)
+
+static inline void put565(uint8_t *dest, unsigned r, unsigned g, unsigned b, unsigned delta)
 {
-    /* LCD_DEPTH < 24 packing from resize.c / bmp.c, delta = 127 (no dither) */
-    r = (31 * r + (r >> 3) + 127) >> 8;
-    g = (63 * g + (g >> 2) + 127) >> 8;
-    b = (31 * b + (b >> 3) + 127) >> 8;
+    /* LCD_DEPTH < 24 packing from resize.c / bmp.c */
+    r = (31 * r + (r >> 3) + delta) >> 8;
+    g = (63 * g + (g >> 2) + delta) >> 8;
+    b = (31 * b + (b >> 3) + delta) >> 8;
     unsigned v = (r << 11) | (g << 5) | b;
     dest[0] = (uint8_t)v;
     dest[1] = (uint8_t)(v >> 8);
@@ -1496,14 +1501,14 @@ static void output_row_32(uint32_t row, void *row_in,
             u = SC_OUT(qp->g, ctx);
             v = SC_OUT(qp->r, ctx);
             yuv_to_rgb(y, u, v, &r, &g, &b);
-            put565(dest, r, g, b);
+            put565(dest, r, g, b, DELTA(col, row));
         }
     } else {
         for (col = 0; col < ctx->dst_w; col++, qp++, dest += 2) {
             r = SC_OUT(qp->r, ctx);
             g = SC_OUT(qp->g, ctx);
             b = SC_OUT(qp->b, ctx);
-            put565(dest, r, g, b);
+            put565(dest, r, g, b, DELTA(col, row));
         }
     }
     pad_row(ctx->out + (uint32_t)ctx->stride * row, ctx->dst_w * 2,
@@ -1794,11 +1799,11 @@ int rbjpeg_decode(const uint8_t *jpg, uint32_t len, int tw, int th,
                 for (; qp < end; qp++, dest += 2)
                 {
                     yuv_to_rgb(qp->blue, qp->green, qp->red, &r, &g, &b);
-                    put565(dest, r, g, b);
+                    put565(dest, r, g, b, DELTA(qp - (end - tw), row));
                 }
             } else {
                 for (; qp < end; qp++, dest += 2)
-                    put565(dest, qp->red, qp->green, qp->blue);
+                    put565(dest, qp->red, qp->green, qp->blue, DELTA(qp - (end - tw), row));
             }
             pad_row(out_rgb565 + (uint32_t)stride_bytes * row, tw * 2,
                     stride_bytes);

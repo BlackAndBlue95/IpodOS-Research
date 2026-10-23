@@ -1,5 +1,6 @@
 /* cover.jpg -> RGB565 thumbnail of any size, area-averaged. Uses TJpgDec (C)ChaN. */
 #include "tjpgd.h"
+#include "dither565.h"
 typedef struct {
     int (*rd)(void *ctx, void *buf, int n);   /* returns bytes read */
     int (*skip)(void *ctx, int n);
@@ -42,6 +43,8 @@ int cover_decode(int (*rd)(void *, void *, int), int (*skip)(void *, int), void 
     for (i = 0; i < tw * th; i++) {
         uint32_t *a = acc + i * 4, n = a[3] ? a[3] : 1;
         uint32_t r = a[0] / n, g = a[1] / n, b = a[2] / n;
+        if (dither565) out[i] = dith565_q8((a[0] << 8) / n, (a[1] << 8) / n, (a[2] << 8) / n, dith_t(i % tw, i / tw));
+        else
         out[i] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
     return 0;

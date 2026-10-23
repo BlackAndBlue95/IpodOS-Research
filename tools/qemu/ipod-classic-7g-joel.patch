@@ -405,6 +405,22 @@ index 0000000..0f67128
 +}
 +
 +type_init(eic_register_types)
+diff --git a/hw/arm/ipod_classic/ipod_classic_i2c.c b/hw/arm/ipod_classic/ipod_classic_i2c.c
+index 001ccfc..2454395 100644
+--- a/hw/arm/ipod_classic/ipod_classic_i2c.c
++++ b/hw/arm/ipod_classic/ipod_classic_i2c.c
+@@ -147,9 +147,9 @@ static uint64_t ipod_classic_i2c_read(void *opaque, hwaddr offset,
+     case S5L8702_IICADD:
+         return s->iicadd;
+     case S5L8702_IICDS:
+-        /* A read consumes the received byte; a later GO may replace it. */
++        /* A read consumes the received byte but leaves it pending: Apple's ISR (0x083608dc)
++           then writes IICCON back with bit 4 as read to receive the next byte. */
+         s->rx_valid = false;
+-        s->byte_done = false;
+         return s->iicds;
+     case S5L8702_IICUNK10:
+         /*
 diff --git a/hw/arm/ipod_classic/ipod_classic_lcd.c b/hw/arm/ipod_classic/ipod_classic_lcd.c
 index 6f959d3..0638d3c 100644
 --- a/hw/arm/ipod_classic/ipod_classic_lcd.c
@@ -441,6 +457,141 @@ index 6f959d3..0638d3c 100644
      if (lcd_trace_on()) {
          if (offset >= S5L8702_LCD_WDATA && offset <= S5L8702_LCD_WDATA_LAST) {
              /*
+diff --git a/hw/arm/ipod_classic/ipod_classic_pmu.c b/hw/arm/ipod_classic/ipod_classic_pmu.c
+index c0fdf49..e5a2aba 100644
+--- a/hw/arm/ipod_classic/ipod_classic_pmu.c
++++ b/hw/arm/ipod_classic/ipod_classic_pmu.c
+@@ -44,10 +44,7 @@
+  *     any of our sources, and neither Rockbox nor iPodLinux reads them. They
+  *     answer zero. If the firmware turns out to compare them against something
+  *     the disassembly will say what, and then they get a real value.
+- *   - The battery reading, 844 out of 1023. Through Rockbox's own conversion
+- *     (pmu-6g.c: raw * 2000 / 1023 + 2250) that is 3900 mV, an ordinary
+- *     charged-but-not-full lithium cell. Nothing in our sources says what a
+- *     real one reads; the number is chosen to be unremarkable.
++ *   - The ADC inputs of a healthy iPod with nothing plugged in; see pmu_adc_value.
+  */
+ 
+ #include "qemu/osdep.h"
+@@ -89,35 +86,60 @@ static bool pmu_oocstat_healthy(void)
+ }
+ 
+ /*
+- * PMUBATT=N overrides the raw battery reading, 0..1023.
+- *
+- * Why this needs to be reachable: on the way into a song retailOS puts up its
+- * "low battery -- connect to power" screen and refuses to play, which is a
+- * plausible reason for playback to start and immediately stop. The default 844
+- * is 3900 mV only through ROCKBOX's conversion; what Apple's power manager makes
+- * of the same number is UNDETERMINED, so the honest thing is to be able to vary
+- * it and see, rather than to assume the two firmwares scale it alike.
++ * Battery voltage as a 10-bit BATSNS subtractor count (mV = raw * 2000 / 1023 + 2250, Apple's
++ * 0x082da674 and Rockbox alike). PMUBATT=N sets it; PMUDRAIN=H drains it to Apple's empty
++ * threshold (675, 3.57 V) over H hours of guest time.
+  */
+ static uint32_t pmu_battery_raw(void)
+ {
+     const char *e = getenv("PMUBATT");
++    uint32_t raw = S5L8702_PMU_ADC_BATTERY_RAW;
++    double h;
++
+     if (e && *e) {
+-        unsigned long v = strtoul(e, NULL, 0);
+-        if (v > 1023) {
+-            v = 1023;
+-        }
+-        return (uint32_t)v;
++        raw = MIN(strtoul(e, NULL, 0), 1023);
++    }
++    e = getenv("PMUDRAIN");
++    h = e && *e ? strtod(e, NULL) : 0;
++    if (h > 0 && raw > 675) {
++        double t = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) / 3600000.0;
++        raw -= MIN(raw - 675, (uint32_t)((raw - 675) * t / h));
++    }
++    return raw;
++}
++
++/* each input as on a healthy iPod with nothing plugged in */
++static uint32_t pmu_adc_value(IPodClassicPMUState *s)
++{
++    uint32_t mv = pmu_battery_raw() * 2000 / 1023 + 2250;
++    uint32_t div = s->reg[PCF5063X_REG_ADCC3] & PCF5063X_ADCC3_RES_DIV_TWO ? 2 : 3;
++
++    switch (s->reg[PCF5063X_REG_ADCC1] & PCF5063X_ADCC1_MUX_MASK) {
++    case PCF5063X_ADCC1_MUX_BATSNS_SUBTR:
++        return pmu_battery_raw();
++    case PCF5063X_ADCC1_MUX_BATSNS_RES:
++        return MIN(mv * 1023 / (2000 * div), 1023);
++    case PCF5063X_ADCC1_MUX_ADCIN1:
++        /* accessory ID pin open: full scale (Apple's 0x080d0844 takes raw >> 4 = 63 as none) */
++        return 1023;
++    case PCF5063X_ADCC1_MUX_BATTEMP:
++        /* ASSUMED: NTC at about room temperature, half scale; Apple never reads it */
++        return 512;
++    default:
++        /* ADCIN2 is USB D+/D- (Apple's charger check 0x080c8e08): 0 V, no charger signature */
++        return 0;
+     }
+-    return S5L8702_PMU_ADC_BATTERY_RAW;
+ }
+ 
+ static void pmu_start_adc(IPodClassicPMUState *s)
+ {
+-    uint32_t raw = pmu_battery_raw();
++    uint32_t raw = pmu_adc_value(s);
+ 
++    /* 8-bit mode puts the top 8 bits in ADCS1, as the 10-bit result does */
+     s->reg[PCF5063X_REG_ADCS1] = (raw >> 2) & 0xff;
+     s->reg[PCF5063X_REG_ADCS2] = 0;
+-    s->reg[PCF5063X_REG_ADCS3] = PCF5063X_ADCS3_ADCRDY | (raw & 0x03);
++    s->reg[PCF5063X_REG_ADCS3] = PCF5063X_ADCS3_ADCRDY |
++        (s->reg[PCF5063X_REG_ADCC1] & PCF5063X_ADCC1_RES_8BIT ? 0 : raw & 0x03);
+ }
+ 
+ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
+@@ -156,6 +178,10 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
+          */
+         val = pmu_oocstat_healthy() ? PCF5063X_OOCSTAT_HEALTHY : s->reg[addr];
+         break;
++    case PCF5063X_REG_BVMCTL:
++        /* BVMLOW (bit 0) is the comparator's read-only output: the modelled battery is never low */
++        val &= ~PCF5063X_BVMCTL_BVMLOW;
++        break;
+     case PCF5063X_REG_MBCS1:
+         /*
+          * Main-battery-charger status. The stale value reads as a spurious
+@@ -163,24 +189,14 @@ static uint8_t pmu_reg_read(IPodClassicPMUState *s, uint8_t addr)
+          * state instead. See the header.
+          */
+         val = PCF5063X_MBCS1_HEALTHY;
+-        /*
+-         * External power: the wall adapter unless PMUCHARGER says otherwise
+-         * (PMUCHARGER=usb for USB power, PMUCHARGER=none for battery only).
+-         *
+-         * MEASURED (1.1.2): on battery alone the retailOS eventually puts up
+-         * "Low Battery -- Connect to Power", and raising the battery ADC to
+-         * full scale does NOT prevent it -- it wants to be told it is plugged
+-         * in. An emulated iPod has no cell to discharge, so "sitting on a
+-         * charger" is the honest default. Also MEASURED on 1.1.2: with the
+-         * adapter, playback switched to the full-screen "Charging" mode, as a
+-         * real iPod does; PMUCHARGER=usb is the one that stayed usable there.
+-         */
++        /* on battery by default; PMUCHARGER=adapter: wall adapter (the OS's full-screen
++           Charging mode), any other value (1, usb): USB power */
+         {
+             const char *e = getenv("PMUCHARGER");
+-            if (!e || !*e || !strcmp(e, "adapter")) {
+-                val |= PCF5063X_MBCS1_ADAPTPRES | PCF5063X_MBCS1_ADAPTOK;
+-            } else if (strcmp(e, "none")) {
+-                val |= PCF5063X_MBCS1_USBPRES | PCF5063X_MBCS1_USBOK;
++            if (e && *e && strcmp(e, "none") && strcmp(e, "0")) {
++                val |= !strcmp(e, "adapter")
++                       ? PCF5063X_MBCS1_ADAPTPRES | PCF5063X_MBCS1_ADAPTOK
++                       : PCF5063X_MBCS1_USBPRES | PCF5063X_MBCS1_USBOK;
+             }
+         }
+         break;
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
 index cd9afad..ed69725 100644
 --- a/hw/arm/meson.build
@@ -501,6 +652,49 @@ index 0000000..fbd6418
 +};
 +
 +#endif
+diff --git a/include/hw/arm/ipod_classic/ipod_classic_pmu.h b/include/hw/arm/ipod_classic/ipod_classic_pmu.h
+index 081bfe3..792be75 100644
+--- a/include/hw/arm/ipod_classic/ipod_classic_pmu.h
++++ b/include/hw/arm/ipod_classic/ipod_classic_pmu.h
+@@ -38,6 +38,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
+ #define PCF5063X_REG_OOCSHDWN  0x0c
+ #define PCF5063X_REG_OOCSTAT   0x12
+ #define PCF5063X_REG_GPIOCTL   0x13
++#define PCF5063X_REG_BVMCTL    0x18
++#define PCF5063X_BVMCTL_BVMLOW 0x01   /* read-only: battery below the BVMLVL threshold */
+ #define PCF5063X_REG_DCDCSTAT  0x41
+ #define PCF5063X_REG_LDOSTAT   0x42
+ #define PCF5063X_REG_MBCS1     0x4b
+@@ -56,6 +58,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
+ #define PCF50635_REG_GPIOSTAT  0x87
+ 
+ #define PCF5063X_ADCC1_ADCSTART   0x01
++#define PCF5063X_ADCC1_RES_8BIT   0x02
++#define PCF5063X_ADCC1_MUX_MASK   0xf0
++#define PCF5063X_ADCC1_MUX_BATSNS_RES   0x00
++#define PCF5063X_ADCC1_MUX_BATSNS_SUBTR 0x10
++#define PCF5063X_ADCC1_MUX_BATTEMP      0x60
++#define PCF5063X_ADCC1_MUX_ADCIN1       0x70
++#define PCF5063X_ADCC3_RES_DIV_TWO 0x10
+ #define PCF5063X_ADCS3_ADCRDY     0x80
+ 
+ /*
+@@ -120,13 +129,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IPodClassicPMUState, IPOD_CLASSIC_PMU)
+  */
+ #define PCF50635_INT6_GPIO2  0x02
+ 
+-/*
+- * ASSUMED. 844 of 1023 is 3900 mV through Rockbox's own conversion in
+- * pmu-6g.c (raw * 2000 / 1023 + 2250). Nothing in our sources says what a real
+- * cell reads; this is chosen to be an ordinary value rather than an
+- * interesting one.
+- */
+-#define S5L8702_PMU_ADC_BATTERY_RAW  844
++/* ASSUMED: a healthy, nearly charged cell, 3955 mV (89 % on Apple's thresholds at 0x089cae8e) */
++#define S5L8702_PMU_ADC_BATTERY_RAW  872
+ 
+ struct IPodClassicPMUState {
+     I2CSlave parent_obj;
 diff --git a/meson.build b/meson.build
 index e02d30a..cd563ad 100644
 --- a/meson.build

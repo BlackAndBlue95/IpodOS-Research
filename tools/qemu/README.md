@@ -1,23 +1,22 @@
 # Emulator (iPod Classic 7G, firmware 2.0.4)
 
-Based on davidmonterocrespo24/qemu-ipod-classic (6G). `ipod-classic-7g.patch` adds:
+One emulator: [joelheaps/qemu-ipod-classic](https://github.com/joelheaps/qemu-ipod-classic) in
+`build/qemu/src-joel` (real codec, video decoder and display compositor) with `ipod-classic-7g-joel.patch`,
+made against its commit 95bd22d. `screens.py`, `tourcmp.sh`, `boot.sh` and `videotest.py` all use it. The
+older davidmonterocrespo24 tree (`build/qemu/src`) is retired: its I2C model never ended a transfer, so
+everything after the first PMU access (codec traffic included) went to the PMU, and duplicated bytes
+corrupted its registers (the "low battery" screens and 23 % readings in long tours). The patch adds:
 - `IPOD_SYSINFO=<file>`: SysInfo from a real iPod (`FLAC/sysinfo.bin`, written by our OS at boot);
   2.0.4 refuses a 6G hardware version (`IPOD_HWID` overrides only that field).
-- ATA interrupt latched in bit 2 as well as bit 0 (the 7G driver waits with mask 4).
 - A SHA-1 engine model at 0x38000000 (Rockbox's register usage). 2.0.4's iTunesDB check does not use
   it, so `boot.sh` bypasses that check in its copy of the image.
-- Display layers composed front to back with alpha by default, so the menu sits over the main menu's
-  art pane as on the device (`DISP_ALPHA=0`: the old back-to-front opaque order).
-
-Build: clone the fork into `build/qemu/src`, apply the patch, get glib/pixman/openssl/sdl2 with
-micromamba into `build/qemu/deps`, then `../configure --target-list=arm-softmmu --enable-sdl` and
-`ninja qemu-system-arm` (about a minute). Disk: `mkdisk7g.py <out> <firmware partition dump> <FAT32 image>`.
-Keys: q/e wheel, Enter select, w menu, a/d prev/next, s play.
-
-Now Playing and video need the display compositor and video decoder of
-[joelheaps/qemu-ipod-classic](https://github.com/joelheaps/qemu-ipod-classic) (`build/qemu/src-joel`). The other
-screens work with either. For that tree use `ipod-classic-7g-joel.patch` (made against its commit 95bd22d):
-the changes above (its ATA already latches bit 2) plus, for video:
+- `ipod_classic_i2c.c`: a received byte stays pending when IICDS is read, so multi-byte reads (the RTC's
+  7 bytes) go on; they stopped after one byte.
+- `ipod_classic_pmu.c`: on battery by default, steady at 89 % (raw 872, 3955 mV); every ADC input reads
+  as on a healthy iPod with nothing plugged in (accessory pin open, USB D+/D- at 0 V); BVMCTL's BVMLOW
+  reads clear. `PMUBATT=N` sets the raw count, `PMUDRAIN=H` drains to empty over H hours of guest time,
+  `PMUCHARGER=1` (or `usb`) reports USB power and `PMUCHARGER=adapter` the wall adapter (the OS's
+  full-screen Charging mode).
 - `ipod_classic_eic.c`: the external interrupt controller at 0x39A00000 (level +0x80, status +0xA0 write 1
   to clear, enable +0xC0, type +0xE0; group g = 6 - pin/32 raises VIC EINT(6 - g)) and the panel's frame
   marker on GPIO 55 (group 5 bit 15) at `EIC_FMARK_HZ` (60). `EIC_FMARK=0` turns it off; `EIC_FMARK=panel`
@@ -27,9 +26,15 @@ the changes above (its ATA already latches bit 2) plus, for video:
 - `ipod_classic_disp.c`: a 640x480 video plane scaled 2:1 to the panel; plane addresses masked to DRAM.
 - `meson.build`: `-Dsm1_decoder=enabled` really requires libavcodec/libavutil.
 
-Video build: libavcodec/libavutil from micromamba in `build/qemu/deps-av`, then configure with
-`-Dsm1_decoder=enabled` and `PKG_CONFIG_PATH` including `deps-av/lib/pkgconfig`; `make libpctrace.so` in
-`build/contrib/plugins`. The model decodes the access units it is given, not guest memory: dump them from
+Build: clone the fork into `build/qemu/src-joel`, check out 95bd22d and apply the patch; get
+glib/pixman/openssl/sdl2 with micromamba into `build/qemu/deps` and libavcodec/libavutil into
+`build/qemu/deps-av`; then `../configure --target-list=arm-softmmu --enable-sdl -Dsm1_decoder=enabled` with
+`PKG_CONFIG_PATH` including `deps-av/lib/pkgconfig`, and `ninja qemu-system-arm`. Run it with
+`DYLD_FALLBACK_LIBRARY_PATH=build/qemu/deps-av/lib`. `make libpctrace.so` in `build/contrib/plugins`.
+Disk: `mkdisk7g.py <out> <firmware partition dump> <FAT32 image>`. Keys: q/e wheel, Enter select,
+w menu, a/d prev/next, s play.
+
+Video: The model decodes the access units it is given, not guest memory: dump them from
 the H.264 front-end (0x081b6564, buffer r1, length r2) with the plugin, and give it the episode's avcC
 payload (the bytes after the `avcC` box type).
 
@@ -48,15 +53,14 @@ Deterministic screen checks (tourcmp drifts once navigation timing differs betwe
 
 `screens.py` waits for the first frame, plays the keys (`waitN` sleeps, `shot` saves a numbered PNG)
 and prints the run's first-frame, glyph-pass, pre-build, fbdmg and CRASH lines (`GREP=a,b` adds more).
-`PMUCHARGER=1` reports USB power. Test disks: `EF.img` (stock fonts), `EF-fonts.img` (`style=modern`),
+No PMU variables are needed. Test disks: `EF.img` (stock fonts), `EF-fonts.img` (`style=modern`),
 `EF-classic.img` (`style=classic`). Their firmware partition (block 8, 192 MB) needs the grown `rsrc`
 for Modern's icons and fonts (docs/CODEBASE.md section 11): `tools/sf/rsrc_tree.py PART.bin sficons
 OSOS.dec`, `ospatch/fwpart.py rsrc PART.bin sficons/rsrc NEW.bin`, then write NEW.bin at byte 0x8000
 of a `cp -c` clone of the disk.
 
-The PMU model (`ipod_classic_pmu.c`) reads BVMCTL (0x18) bit 0 as clear: as plain storage it kept
-whatever Apple's writes left there, its LowBattDebounceTask took that for a flat battery during
-navigation, showed "Connect to Power" and froze in the power-down (polling 0x39A00000, not modelled).
+A "Low Battery / Connect to Power" screen or a battery percentage that moves in the emulator is a model
+bug, not a firmware one: the level is constant unless `PMUBATT` or `PMUDRAIN` is set.
 
 Instruction and cache profile (`kprof.c`, a TCG plugin). Counts every executed
 instruction per translation block, the IRQ-handler share, memory traffic by region, and misses in a 16 KB
@@ -93,4 +97,3 @@ opens Videos > TV Shows > the show at that row > its first episode and counts H.
 the front-end 0x081b6564 through the gdb stub: PASS at 3 within 40 s. `videotest-shows.png` shows
 which show was played. It leaves `EIC_FMARK` unset (marker pulses from boot, as on the device):
 with `EIC_FMARK=panel` the frame pool fills after a few units and stops, since nothing writes R090h.
-The plain `build/qemu/src` tree never starts video (selecting an episode does nothing).

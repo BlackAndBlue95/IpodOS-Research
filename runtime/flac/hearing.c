@@ -16,6 +16,7 @@
 #define LVL_FLOOR 1e-6        /* blocks below -60 dB (gaps, fades) leave it alone */
 
 int hear_loud, hear_fatigue, hear_xfeed, hear_limit, hear_phones;
+int hear_dither = 1;
 volatile uint32_t hear_gen;
 volatile uint32_t hear_dose_acc;
 #ifdef HOSTTEST

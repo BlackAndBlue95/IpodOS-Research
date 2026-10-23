@@ -208,7 +208,7 @@ void crash_report(void)
     static const char *const kinds[16] = { "?", "undefined instruction", "?", "prefetch abort",
                                            "data abort", "reserved vector", "?", "FIQ",
                                            "exit/abort (assert, C++ terminate)", "?", "?", "?", "?", "?", "?", "?" };
-    static char rep[8192];
+    char *rep;
     struct crash *c = REC;
     uint32_t pc;
     int i, n, mark;
@@ -257,8 +257,11 @@ void crash_report(void)
     }
     log_s("\n\n");
     c->magic = 0;
-    n = log_take(mark, rep, sizeof rep);
-    crash_file(rep, n);
+    if ((rep = os_malloc(8192))) {                     /* only after a crash: from the heap, not region E */
+        n = log_take(mark, rep, 8192);
+        crash_file(rep, n);
+        os_free(rep);
+    }
     log_s("   CRASH in the previous run: "); log_s(kinds[c->kind & 15]); log_s(" at pc "); log_x(pc, 8);
     log_s(", "); log_d((int)c->ms); log_s(" ms after OS start -> " CRASH_FILE "  <-- CHECK\n");
 }

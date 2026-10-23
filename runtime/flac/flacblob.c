@@ -21,6 +21,7 @@ struct File { const struct FileVT *vt; };
 #include "rbfir.h"
 #include "fir.h"
 #include "hearing.h"
+#include "nsdither.h"
 void crumb(const char *name);                /* DIAG (log.c) */
 #define CRUMB() crumb(__func__)
 
@@ -651,7 +652,7 @@ typedef struct {
     int16_t *pcm; int pcm_cap;
     int pend_n, pend_pos, chunk; uint64_t pend_out;   /* output frames waiting; pend_out is the first one's sample index */
     int32_t *hist[2]; int hpos; const rbfir *rfir;
-    uint32_t rng;
+    NSQ ns;                /* dither and noise-shaper state per output channel */
     uint64_t next_sample;
     uint32_t t_init, t_last, ticks;
     int first_done;
@@ -694,14 +695,6 @@ static inline int16_t sat16(int32_t v)
     if (v < -32768) return -32768;
     return (int16_t)v;
 }
-/* TPDF dither, +-1 LSB, then round away sh bits */
-static inline int16_t dith(FD *d, int32_t v, int sh)
-{
-    uint32_t m = (1u << sh) - 1, a, b;
-    d->rng = d->rng * 1664525u + 1013904223u; a = (d->rng >> 8) & m;
-    d->rng = d->rng * 1664525u + 1013904223u; b = (d->rng >> 8) & m;
-    return sat16((v + (int32_t)(a + b) - (int32_t)m + (1 << (sh - 1))) >> sh);
-}
 
 /* decode one frame (packet) into d->pcm; 1 ok, 0 bad frame */
 static int fd_decode(FD *d, const uint8_t *ptr, int len)
@@ -743,10 +736,12 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
         if (!d->wbuf) act = 0;
     }
     w = d->wbuf;
+    nsq_rate(&d->ns, d->sr / d->dec, hear_dither);
     if (h.sample != d->next_sample) {      /* a jump (seek or lost frame): the filter starts over */
         for (c = 0; c < 2; c++) memset(d->hist[c], 0, 2 * FIRMAX * 4);
         d->hpos = 0;
         hear_reset(&d->hear);
+        nsq_reset(&d->ns);
     }
     if (d->dec == 1) {
         int sh = d->bps - 16, s24 = 24 - d->bps;
@@ -754,7 +749,7 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
             for (c = 0; c < och; c++) {
                 int32_t v = d->dec_buf[c][i];
                 if (act) w[n++] = s24 >= 0 ? v << s24 : v >> -s24;
-                else if (sh > 0) o[n++] = dith(d, v, sh);
+                else if (sh > 0) o[n++] = nsq_run(&d->ns, c, v << (8 - sh));
                 else o[n++] = sat16(sh < 0 ? v << -sh : v);
             }
         d->pend_out = h.sample;
@@ -773,13 +768,10 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
             if (((uint32_t)(s0 + i) % D) == 0) {
                 for (c = 0; c < och; c++) {
                     const int32_t *x = d->hist[c] + hp;  /* oldest..newest */
-                    int64_t acc = rbfir_dot(d->rfir, x);
-                    uint32_t a, b;   /* TPDF dither, +-1 output LSB (2^23) */
-                    if (act) { w[n++] = (int32_t)((acc + (1 << 14)) >> 15); continue; }
-                    d->rng = d->rng * 1664525u + 1013904223u; a = d->rng >> 9;
-                    d->rng = d->rng * 1664525u + 1013904223u; b = d->rng >> 9;
-                    acc += (int64_t)a + b - (1 << 23);
-                    o[n++] = sat16((int32_t)((acc + (1 << 22)) >> 23));
+                    int64_t acc = rbfir_dot(d->rfir, x);   /* 2^23 per output LSB */
+                    int32_t v = (int32_t)((acc + (1 << 14)) >> 15);
+                    if (act) w[n++] = v;
+                    else o[n++] = nsq_run(&d->ns, c, v);
                 }
             }
         }
@@ -788,7 +780,8 @@ static int fd_decode(FD *d, const uint8_t *ptr, int len)
     }
     if (act) {
         hear_run(&d->hear, w, n / och);
-        for (i = 0; i < n; i++) o[i] = dith(d, w[i], 8);
+        for (i = 0; i < n; i += och)
+            for (c = 0; c < och; c++) o[i + c] = nsq_run(&d->ns, c, w[i + c]);
     }
     hear_meter(&d->hear, o, n / och);
     d->pend_pos = 0;
@@ -878,7 +871,7 @@ static int fd_init(FD *d, const uint8_t *desc)
     d->st.flags = RBFLAC_F_CRC16;
     for (c = 0; c < 2; c++) if (d->hist[c]) memset(d->hist[c], 0, 2 * FIRMAX * 4);
     d->hpos = 0;
-    d->rng = 0x1234567;
+    nsq_reset(&d->ns);
     d->next_sample = ~(uint64_t)0;
     d->pend_n = d->pend_pos = 0;
     /* the PCM decoder's Init, field for field */

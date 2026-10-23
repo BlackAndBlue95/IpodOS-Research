@@ -20,10 +20,11 @@ if struct.unpack_from('<I', b, off)[0] == 0x159f4024: struct.pack_into('<I', b, 
 open(kernel, 'wb').write(b)
 region = 'region E 08b33000-%08x' % (0x08b33000 + len(b) - 0xb3ded8)
 subprocess.run(['cp', '-c', disk, clone], check=True)
-q = subprocess.Popen([os.path.join(R, 'build/qemu/src/build/qemu-system-arm'), '-M', 'iPod-Classic', '-kernel', kernel,
+q = subprocess.Popen([os.path.join(R, 'build/qemu/src-joel/build/qemu-system-arm'), '-M', 'iPod-Classic', '-kernel', kernel,
                       '-serial', 'null', '-display', 'none', '-drive', 'if=ide,format=raw,file=' + clone,
                       '-monitor', 'unix:%s,server,nowait' % mon],
-                     env=dict(os.environ, IPOD_SYSINFO=os.path.join(RUN, 'sysinfo-real.bin')),
+                     env=dict(os.environ, IPOD_SYSINFO=os.path.join(RUN, 'sysinfo-real.bin'),
+                              DYLD_FALLBACK_LIBRARY_PATH=os.path.join(R, 'build/qemu/deps-av/lib')),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def rtlog():

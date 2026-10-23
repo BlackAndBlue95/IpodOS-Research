@@ -88,6 +88,7 @@ static void settings_save(void)
     n = put_line(buf, n, "fatigue=", fatigue_keys[hear_fatigue & 3]);
     n = put_line(buf, n, "crossfeed=", hear_xfeed ? "on" : "off");
     n = put_line(buf, n, "phones=", phones_keys[hear_phones & 3]);
+    n = put_line(buf, n, "dither=", hear_dither ? "shaped" : "tpdf");
     vol_delete("FLAC\\settings.txt");
     file_write("FLAC\\settings.txt", buf, n);
 }
@@ -116,7 +117,8 @@ static int settings_load(void)
             for (k = 0; k < 7; k++) if (prefix(buf + i + 6, limit_keys[k])) hear_limit = k;
         } else if (prefix(buf + i, "phones=")) {
             for (k = 0; k < 4; k++) if (prefix(buf + i + 7, phones_keys[k])) hear_phones = k;
-        } else if (prefix(buf + i, "city=")) {
+        } else if (prefix(buf + i, "dither=")) hear_dither = !prefix(buf + i + 7, "tpdf");   /* no menu row */
+        else if (prefix(buf + i, "city=")) {
             /* optional override of the place used for sunrise/sunset (no menu row for it) */
             for (k = 0; k < NCITIES; k++) {
                 const char *c = cities[k].name;

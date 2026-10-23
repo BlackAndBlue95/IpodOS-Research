@@ -95,11 +95,12 @@ int log_flush(void)
     if (first) {
         /* the previous run's log is kept as rtlog.prev.txt. Copied, not renamed: creating a file
            under a name just renamed away fails in this file layer. */
-        static char prev[16384];
-        int got = file_read("FLAC\\rtlog.txt", prev, sizeof prev, 0);
+        char *prev = os_malloc(16384);                 /* once per boot: from the heap, not region E */
+        int got = prev ? file_read("FLAC\\rtlog.txt", prev, 16384, 0) : 0;
         first = 0;
         vol_delete("FLAC\\rtlog.prev.txt");
         if (got > 0) file_write("FLAC\\rtlog.prev.txt", prev, (uint32_t)got);
+        if (prev) os_free(prev);
     }
     vol_delete("FLAC\\rtlog.txt");
     rc = file_write("FLAC\\rtlog.txt", logb, n);

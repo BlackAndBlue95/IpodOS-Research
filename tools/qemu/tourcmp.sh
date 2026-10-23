@@ -4,7 +4,7 @@
 # DISK=<image in build/qemu/run> picks another disk (default EF.img).
 cd /Users/harrison/IPOD/build/qemu/run
 D=${DISK:-EF.img}
-Q=../src/build/qemu-system-arm
+Q=../src-joel/build/qemu-system-arm; export DYLD_FALLBACK_LIBRARY_PATH=../deps-av/lib
 T="shot e wait shot e wait shot e wait shot e wait shot e wait shot e wait shot q q q q q q wait ret wait shot e e e e e e wait ret wait shot ret wait wait wait shot w wait w wait w wait w wait e e e e e wait ret wait shot e e e e e e wait ret wait shot w wait w wait q wait ret wait shot"
 i=0
 for k in "$@"; do i=$((i+1)); cp -c $D Z-tc$i.img; rm -f montc$i.sock; IPOD_SYSINFO=sysinfo-real.bin $Q -M iPod-Classic -kernel $k -serial null -drive if=ide,format=raw,file=Z-tc$i.img -display none -monitor unix:montc$i.sock,server,nowait >/dev/null 2>&1 & done

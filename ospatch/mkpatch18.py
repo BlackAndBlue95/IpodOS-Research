@@ -33,7 +33,9 @@ ap.add_argument('--art-pane', action='store_true', help='main menu art pane show
 ap.add_argument('--heap-cache', action='store_true', help='small-block cache in front of os_malloc/os_free (heapcache.c)')
 ap.add_argument('--fast-prims', action='store_true', help='direct paths for dynamic-array fetches and bitset scans (prims.c)')
 ap.add_argument('--ft-raster', action='store_true', help="FreeType 2.14's anti-aliased rasterizer for the smooth renderers (ft/ftgrays_e.c)")
-ap.add_argument('--prof', action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
+ap.add_argument('--kern', action='store_true', help='pair kerning and fractional advances for fonts with a kern table (kern.c)')
+ap.add_argument('--dither', action='store_true', help='blue-noise dithered RGB565 for generated gradients and decoded covers (dither565.h)')
+ap.add_argument('--prof',action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
 ap.add_argument('--governor-floor', action='store_true',
                 help='with the backlight on, the OS governor floors at L1 (108 MHz) instead of pinning L0')
 ap.add_argument('--sleep-delays', action='store_true', help='mdelay from a task sleeps instead of spinning (kfix.c)')
@@ -99,6 +101,7 @@ struct.pack_into('<I', img, 0x0c, len(img) - HDR)              # body size, chec
 # hooks
 LIBLOAD = 0x0805d62c             # Apple's library loader
 HC_ALLOC_CALLS = (0x081927c0, 0x08191f48, 0x08192434, 0x081927ec)   # bl 0x08192170: malloc, zeroing, no-beep, realloc
+KERN_RUNS = (0x08070300, 0x0807033c, 0x0807ca1c, 0x0809cbf4, 0x0806c2c0, 0x080e7960, 0x080e7bb4)   # bl 0x0809334c: text measure/draw loops
 retarget(0x0804d7c4, LIBLOAD, sym['e_libload_boot'])
 retarget(0x081ae29c, LIBLOAD, sym['e_libload_task'])
 # vector stubs (undef, prefetch abort, data abort, reserved, FIQ) -> e_cpu_exc: crash record, then Apple's reset
@@ -235,6 +238,13 @@ if a.hooks == 'all':
     if a.ft_raster:   # raster_class of the "smooth" and "smooth-lcd" renderer classes (FT_Raster_Funcs 0x0890d8c4)
         wr(0x0890d914, sym['ft_grays_raster'], 0x0890d8c4)
         wr(0x0890d950, sym['ft_grays_raster'], 0x0890d8c4)
+    if a.kern:        # TrueType glyph metrics slot -> e_kern_glyph; the measure and draw loops' first call marks a new run (kern.c)
+        wr(0x08983ea8, sym['e_kern_glyph'], 0x0828f948)
+        for at in KERN_RUNS: retarget(at, 0x0809334c, sym['e_kern_run'])
+    if a.dither:      # region E's own RGB565 output (Now Playing background, covers, re-themed bitmaps) dithered
+        o = HDR + E_LOAD + sym['dither565'] - E_BASE
+        assert struct.unpack_from('<I', img, o)[0] == 0
+        struct.pack_into('<I', img, o, 1)
     # required on a 256 GB card (15.6M clusters): stock, the free count is a full FAT scan and a low
     # next-free hint makes one small write read 1.4M entries, long enough to stall the boot
     entry_hook(0x082d75c8, 0xe92d40f8, 0xe3a05000, sym['hk_fatfree'])  # FAT free count: seeded from FSInfo instead of a full FAT scan

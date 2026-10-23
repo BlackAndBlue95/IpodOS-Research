@@ -1,6 +1,7 @@
 /* Album art for FLAC tracks (no ArtworkDB entry). art_find wraps the OS FindImageForTrack
  * (0x080457e4) and points thumbnails at the album's cover; art_load wraps ArtworkThumb::Load
  * (0x080f32ec) and decodes that cover to the requested size. Nothing is written to the iPod. */
+#include "dither565.h"
 #define os_art_find   ((void *(*)(void *, void *))0x080457e4)
 #define os_art_load   ((void (*)(void *, void *))0x080f32ec)
 #define os_img_new    ((uint8_t *(*)(void *, int))0x08053194)
@@ -736,6 +737,10 @@ static void box_scale(const CE *src, uint32_t w, uint32_t h, uint32_t stride, ui
                 const uint16_t *p = (const uint16_t *)(src->px + sy * src->stride);
                 for (sx = x0; sx < x1; sx++) { uint16_t c = p[sx]; r += c >> 11; g += (c >> 5) & 63; b += c & 31; n++; }
             }
+            if (dither565) {
+                uint32_t t = dith_t(x, y);
+                o[x] = (uint16_t)(((r << 8) / n + t) >> 8 << 11 | ((g << 8) / n + t) >> 8 << 5 | ((b << 8) / n + t) >> 8);
+            } else
             o[x] = (uint16_t)((r + n / 2) / n << 11 | (g + n / 2) / n << 5 | (b + n / 2) / n);   /* rounded */
         }
         if (stride > w * 2) memset(dst + y * stride + w * 2, 0, stride - w * 2);
@@ -927,6 +932,7 @@ static uint16_t mix565(uint16_t f, uint16_t o, int a)    /* a 0..256 */
 }
 /* the cover, scaled to fill 320 wide (rows 16..111 of the 128), averaged into 40x30 cells, box
    blurred twice, darkened to 40 %, then bilinear back to 320x240 */
+extern uint8_t theme_pal_white[4];
 static void np_make_bg(const uint8_t *cov565)
 {
     static int16_t g[3][30][40];
@@ -952,21 +958,26 @@ static void np_make_bg(const uint8_t *cov565)
         }
         memcpy(g[c], t, sizeof t);
     }
+    /* the bar colour in 8.8, rounded up so a full fade dithers to exactly its RGB565 value */
+    uint16_t bar = rgb565(theme_pal_white[0], theme_pal_white[1], theme_pal_white[2]);
+    uint32_t bt[3] = { ((bar >> 11) * 0x1000000u + 7967) / 7968, (((bar >> 5) & 63) * 0x1000000u + 16191) / 16192,
+                       ((bar & 31) * 0x1000000u + 7967) / 7968 };
     for (y = 0; y < 240; y++) {
         int fy = y * 29 * 256 / 239, y0 = fy >> 8, wy = fy & 255, y1 = y0 < 29 ? y0 + 1 : 29;
+        int fade = y < 20 ? 256 : y < 52 ? 256 - (y - 20) * 256 / 32 : 0;
         for (x = 0; x < 320; x++) {
             int fx = x * 39 * 256 / 319, x0 = fx >> 8, wx = fx & 255, x1 = x0 < 39 ? x0 + 1 : 39, v[3];
             for (c = 0; c < 3; c++) {
                 int top = g[c][y0][x0] * (256 - wx) + g[c][y0][x1] * wx, bot = g[c][y1][x0] * (256 - wx) + g[c][y1][x1] * wx;
-                v[c] = ((top * (256 - wy) + bot * wy) >> 16) * 40 / 100;
+                if (!dither565) { v[c] = ((top * (256 - wy) + bot * wy) >> 16) * 40 / 100; continue; }
+                v[c] = ((top * (256 - wy) + bot * wy) >> 8) * 40 / 100;            /* 8.8 */
+                v[c] += ((int)bt[c] - v[c]) * fade >> 8;
             }
-            np_bg[y * 320 + x] = rgb565(v[0], v[1], v[2]);
+            np_bg[y * 320 + x] = dither565 ? dith565_q8(v[0], v[1], v[2], dith_t(x, y)) : rgb565(v[0], v[1], v[2]);
         }
     }
     /* the top fades into the status bar's colour (the page colour) */
-    {
-        extern uint8_t theme_pal_white[4];
-        uint16_t bar = rgb565(theme_pal_white[0], theme_pal_white[1], theme_pal_white[2]);
+    if (!dither565) {
         for (y = 0; y < 52; y++) {
             int a = y < 20 ? 256 : 256 - (y - 20) * 256 / 32;
             for (x = 0; x < 320; x++) np_bg[y * 320 + x] = mix565(bar, np_bg[y * 320 + x], a);

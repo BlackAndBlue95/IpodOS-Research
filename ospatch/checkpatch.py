@@ -52,6 +52,9 @@ fast_libc = 'kfix_libc' in sym and dw(0x0802cedc) == sym['kfix_libc']
 if fast_libc:   # --fast-libc: kfix_libc holds Apple's IRAM libc routines
     _o = sym['kfix_libc'] - E
     e_expect[_o:_o + 0x2f8] = iram[0x20:0x318]
+dither = 'dither565' in sym and dw(sym['dither565']) == 1
+if dither:      # --dither: mkpatch18 sets the switch
+    struct.pack_into('<I', e_expect, sym['dither565'] - E, 1)
 check(bytes(dram[E - 0x08000000:E - 0x08000000 + len(e)]) == bytes(e_expect), 'region E at %#x after the copy and BSS zeroing (index entries excepted)' % E)
 check(rw_exec + rw_len == E + len(e), 'copy ends exactly at the end of E')
 check(zi_base + zi_len <= E, 'BSS (%#x..%#x) stays below E' % (zi_base, zi_base + zi_len))
@@ -187,5 +190,12 @@ opt('fast prims', [(0x08299e38, 0xe92d41f0, 'hk_aget'), (0x08299d48, 0xe92d41f0,
                    (0x0829bcc0, 0xebfff8d2, 'hk_bsscan7'), (0x0828f9cc, 0xeb002993, 'hk_bsscansl')])
 ras = (dw(0x0890d914), dw(0x0890d950))
 check(ras in ((0x0890d8c4,) * 2, (sym.get('ft_grays_raster'),) * 2), 'smooth renderers raster_class -> %s' % ('FreeType 2.14 ftgrays' if ras[0] != 0x0890d8c4 else 'stock'))
+KERN_RUNS = ((0x08070300, 0xeb008c11), (0x0807033c, 0xeb008c02), (0x0807ca1c, 0xeb005a4a), (0x0809cbf4, 0xebffd9d4),
+             (0x0806c2c0, 0xeb009c21), (0x080e7960, 0xebfeae79), (0x080e7bb4, 0xebfeade4))
+if dw(0x08983ea8) == 0x0828f948 and all(dw(at) == w for at, w in KERN_RUNS): check(True, 'kerning stock')
+else:
+    check(dw(0x08983ea8) == sym.get('e_kern_glyph'), 'TrueType glyph metrics slot 08983ea8 -> e_kern_glyph')
+    for at, _w in KERN_RUNS: br(at, 'e_kern_run')
+check(True, 'RGB565 dithering %s' % ('on' if dither else 'off'))
 print('ALL OK' if not fails else '%d FAILED' % fails)
 sys.exit(1 if fails else 0)
