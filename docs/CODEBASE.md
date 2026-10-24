@@ -330,7 +330,7 @@ added with a warning. `tools/qemu/videotest.py` checks playback end to end in th
   (`bmap_source`) from `Package.bin`, or from the set file for an SF icon. Only a live switch reads.
   `applied_key` per bitmap lets the UI-init apply skip what already holds its pixels. Colours
   (`COLR`, 4 bytes) keep heap copies.
-- Modern chrome (`docs/MODERN-AUDIT.md` lists what was found): `modern_fill` in theme.c is a
+- Modern chrome: `modern_fill` in theme.c is a
   table of bitmap id ranges with a Dark and a Light colour (or the accent, or the page), filled by
   `modern_late` after the theme lists so it wins over them; `modern_src` bitmaps are rebuilt from
   Apple's pixels each apply (the menu pane keeps Apple's drop shadow; calendar cells keep a quarter of
@@ -484,7 +484,8 @@ PYTHONPATH=runtime/host python3 runtime/host/gen_settings.py ospatch/Firmware-35
 runtime/build.sh
 python3 ospatch/mkpatch18.py --base stock --image ospatch/Firmware-35.9.0.4.osos.dec \
     --e runtime/e.bin --syms runtime/e.syms --out ospatch/osos-v18.dec --hooks all --governor-floor \
-    --ui-fast --ui-lazy --games-defer
+    --ui-fast --ui-lazy --games-defer --heap-cache --fast-prims --ft-raster --sleep-delays \
+    --fast-libc --fast-dcache --fb-damage --art-pane --kern --dither --np-accent
 python3 ospatch/checkpatch.py ospatch/osos-v18.dec runtime/e.bin runtime/e.syms all
 ```
 
