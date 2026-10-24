@@ -260,12 +260,21 @@ static const uint8_t *ce_px(struct CE *e);
 #define NBIND 32
 static struct Geo { uint16_t w, h, stride; } geos[NGEO];
 static uint32_t ngeo;
-static struct Bind { void *stream; const char *cov, *db; struct CE *ce; uint32_t w, h, stride, size, pos, seq, dboff; } bind[NBIND];
+static struct Bind { void *stream; const char *cov, *db; struct CE *ce; uint32_t w, h, stride, size, pos, seq, dboff, t; } bind[NBIND];
 static uint32_t bind_seq;
 static void bind_free(struct Bind *s)
 {
     if (s->ce) ce_put(s->ce);
     s->ce = 0; s->db = 0; s->stream = 0;
+}
+/* a stream Apple stopped reading keeps its cover pinned until the binding is reused: after 5 s
+   unread the cover goes back to the cache (a later read finds or decodes it again) */
+#define BIND_NOW (*(volatile uint32_t *)0x3c7000b4)   /* timer E, us */
+static void bind_sweep(void)
+{
+    uint32_t now = BIND_NOW, i;
+    for (i = 0; i < NBIND; i++)
+        if (bind[i].stream && bind[i].ce && now - bind[i].t > 5000000u) { ce_put(bind[i].ce); bind[i].ce = 0; }
 }
 static int geo_index(uint32_t w, uint32_t h, uint32_t stride)
 {
@@ -332,6 +341,7 @@ static int __attribute__((used)) seek_c(uint32_t *r)
     CRUMB();
     struct Bind *s;
     uint32_t *blk, g, i;
+    bind_sweep();
     s = bind_of((void *)r[0]);
     if (s) bind_free(s);                              /* any seek ends the previous binding */
     if ((r[2] & 0xf0000000u) != AMARK || r[3]) return 0;
@@ -347,7 +357,7 @@ static int __attribute__((used)) seek_c(uint32_t *r)
     }
     s->stream = (void *)r[0]; s->cov = blk_cov(blk_jpeg(blk)); s->ce = 0;
     s->w = geos[g].w; s->h = geos[g].h; s->stride = geos[g].stride;
-    s->size = s->h * s->stride; s->pos = 0; s->seq = ++bind_seq;
+    s->size = s->h * s->stride; s->pos = 0; s->seq = ++bind_seq; s->t = BIND_NOW;
     /* 320x320 from covers.db: read straight into the caller's buffer, no cache copy */
     if (blk[0] == ARTMAGIC3 && s->w == 320 && s->h == 320 && s->size == (uint32_t)afmt[1].size
         && artdb_lookup(blk_key(blk), &s->dboff, 0, 0, 0, 0) > 0) { s->db = blk_cov(blk); s->dboff += afmt_off(1); }
@@ -364,6 +374,7 @@ static int __attribute__((used)) read_c(uint32_t *r)
     uint32_t n;
     int rc;
     if (!s) return 0;
+    s->t = BIND_NOW;
     TR(20) = (TR(20) & ~0xff00u) | cur_task() << 8;
     if (s->db && !s->ce) {
         File *f = open_file(s->db);                  /* per call: a stream Apple drops keeps no handle */
@@ -391,7 +402,8 @@ static int __attribute__((used)) read_c(uint32_t *r)
     }
     n = r[1];
     if (n > s->size - s->pos) n = s->size - s->pos;
-    memcpy((void *)r[2], ce_px(s->ce) + s->pos, n);
+    { struct CE *e = s->ce; if (!e) { if (r[3]) *(uint32_t *)r[3] = 0; r[0] = 5; return 1; }   /* swept just now */
+      memcpy((void *)r[2], ce_px(e) + s->pos, n); }
     ((void (*)(void))0x0802ce00)();   /* clean D-cache: the reader may hand this to DMA */
     s->pos += n;
     if (r[3]) *(uint32_t *)r[3] = n;
@@ -962,6 +974,8 @@ static void np_make_bg(const uint8_t *cov565)
     uint16_t bar = rgb565(theme_pal_white[0], theme_pal_white[1], theme_pal_white[2]);
     uint32_t bt[3] = { ((bar >> 11) * 0x1000000u + 7967) / 7968, (((bar >> 5) & 63) * 0x1000000u + 16191) / 16192,
                        ((bar & 31) * 0x1000000u + 7967) / 7968 };
+    int theme_dark(void);
+    int lift = theme_dark() ? 0 : 153;          /* Light: 40% cover over white, so dark text reads; Dark: 40% over black */
     for (y = 0; y < 240; y++) {
         int fy = y * 29 * 256 / 239, y0 = fy >> 8, wy = fy & 255, y1 = y0 < 29 ? y0 + 1 : 29;
         int fade = y < 20 ? 256 : y < 52 ? 256 - (y - 20) * 256 / 32 : 0;
@@ -969,8 +983,8 @@ static void np_make_bg(const uint8_t *cov565)
             int fx = x * 39 * 256 / 319, x0 = fx >> 8, wx = fx & 255, x1 = x0 < 39 ? x0 + 1 : 39, v[3];
             for (c = 0; c < 3; c++) {
                 int top = g[c][y0][x0] * (256 - wx) + g[c][y0][x1] * wx, bot = g[c][y1][x0] * (256 - wx) + g[c][y1][x1] * wx;
-                if (!dither565) { v[c] = ((top * (256 - wy) + bot * wy) >> 16) * 40 / 100; continue; }
-                v[c] = ((top * (256 - wy) + bot * wy) >> 8) * 40 / 100;            /* 8.8 */
+                if (!dither565) { v[c] = ((top * (256 - wy) + bot * wy) >> 16) * 40 / 100 + lift; continue; }
+                v[c] = ((top * (256 - wy) + bot * wy) >> 8) * 40 / 100 + (lift << 8);   /* 8.8 */
                 v[c] += ((int)bt[c] - v[c]) * fade >> 8;
             }
             np_bg[y * 320 + x] = dither565 ? dith565_q8(v[0], v[1], v[2], dith_t(x, y)) : rgb565(v[0], v[1], v[2]);
@@ -990,16 +1004,18 @@ __attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32
     static uint16_t src[NP_SIDE * NP_SIDE];
     static uint32_t src_sum;
     static int bg_gen = -1;
-    extern int theme_gen;
+    extern int theme_accent;
+    void theme_cover(const uint16_t *p, int stride, int w, int h);
     const uint16_t *wh = (const uint16_t *)(t + 1);
-    int x, y, i;
+    int x, y, i, bar = theme_pal_white[0] << 16 | theme_pal_white[1] << 8 | theme_pal_white[2];
     uint32_t sum = 0;
     if (theme_style && ((t[0] >> 26) == 2) && wh[0] == 320 && wh[1] == 240) {
         uint16_t *buf = (uint16_t *)t[0];
         for (y = 0; y < NP_SIDE; y++)                   /* the cover as Apple drew it */
             memcpy(src + y * NP_SIDE, buf + (NP_Y + y) * 320 + NP_X, NP_SIDE * 2);
         for (i = 0; i < NP_SIDE * NP_SIDE; i += 97) sum = sum * 31 + src[i];
-        if (!np_bg || sum != src_sum || bg_gen != theme_gen) { np_make_bg((const uint8_t *)src); src_sum = sum; bg_gen = theme_gen; }   /* its top fades into the bar colour */
+        if (sum != src_sum || bg_gen != bar) theme_cover(src, NP_SIDE, NP_SIDE, NP_SIDE);   /* new cover or theme */
+        if (!np_bg || sum != src_sum || bg_gen != bar) { np_make_bg((const uint8_t *)src); src_sum = sum; bg_gen = bar; }   /* its top fades into the bar colour */
         if (np_bg) memcpy(buf, np_bg, 320 * 240 * 2);
         for (y = 0; y < NP_SIDE; y++) {                 /* the cover, corners rounded over the background */
             uint16_t *d = buf + (NP_Y + y) * 320 + NP_X;
@@ -1017,6 +1033,11 @@ __attribute__((section(".text.entry"), used, noinline)) void e_np_present(uint32
         }
         ((void (*)(void))0x0802ce00)();     /* clean D-cache before the buffer goes to the display */
         return;
+    }
+    if (theme_accent == 8 && ((t[0] >> 26) == 2) && wh[0] == 320 && wh[1] == 240) {   /* Classic, Album accent: the tilted cover's middle */
+        const uint16_t *mid = (const uint16_t *)t[0] + 52 * 320 + 30;
+        for (i = 0; i < 96 * 96; i += 97) sum = sum * 31 + mid[i / 96 * 320 + i % 96];
+        if (sum != src_sum) { theme_cover(mid, 320, 96, 96); src_sum = sum; }
     }
     os_cover_present(t);
 }

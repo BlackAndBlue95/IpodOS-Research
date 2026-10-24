@@ -25,7 +25,7 @@ INST0 = 0x44c                                             # 4 sub-instances per 
 KEY_TEXT = (0x8930, 0x8931, 0x8932, 0x8933, 0x8934)       # provider keys: current value text
 KEY_CHECK = (0x8940, 0x8950, 0x8960, 0x8970)              # provider keys: checkmark image, + option index
 THEME_OPTIONS = ['Light', 'Dark', 'Automatic', 'Modern style', 'Restart to apply']
-ACCENT_OPTIONS = ['Blue', 'Purple', 'Pink', 'Red', 'Orange', 'Yellow', 'Green', 'Graphite']
+ACCENT_OPTIONS = ['Blue', 'Purple', 'Pink', 'Red', 'Orange', 'Yellow', 'Green', 'Graphite', 'Album']   # Album: the playing cover's colour
 LIBRARY_OPTIONS = ['Sync library now', 'Power state to log']
 HEARING_OPTIONS = ['Loud limit', 'Loudness', 'Ear fatigue', 'Crossfeed', 'Phones']   # value rows like Clicker: the value is drawn on the right
 STR_LABEL = (0x0dad0f70, 0x0dad0f71, 0x0dad0f8c, 0x0dad0fc6, 0x0dad0fc7)
@@ -111,7 +111,7 @@ for g, (label, options, scr, lay, action) in enumerate(GROUPS):
     rows, pids = [], []
     value_rows = scr == HEARING_SCREEN
     for k, text in enumerate(options):
-        pid = 0x0dad0f90 + 8 * g + k
+        pid = 0x0dad0f90 + 8 * g + k if k < 8 else 0x0dad0fd0 + 8 * g + k   # 8 rows per group, then past the hearing strings
         sid = new_sorc((0x80, STR0[g] + k, 1), (0x8900, KEY_CHECK[g] + k, 10 if value_rows else 0xc))
         rows.append(row_clone(clicker_row if value_rows else sub_row, pid, k, sid)); pids.append(pid)
     add('ITEM', ITEM_ID[g], item_build(rows)); option_pids.append(pids)

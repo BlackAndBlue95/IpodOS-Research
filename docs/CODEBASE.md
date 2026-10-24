@@ -95,6 +95,17 @@ and Apple's load, so a stall names its stage (see "Boot screen" in section 9).
   scaler, and re-themed 565 bitmaps whose luminance spans 8 or more (changed pixels only). All of it
   runs when pixels are made, not per frame. Thumbnails already in `covers.db` keep the pixels they
   were made with until their album's entry is rebuilt.
+- **Cover accent (`theme.c` `theme_cover`, `--np-accent`, Settings > Accent Colour > Album).** Once
+  per cover `e_np_present` hands the cover (Modern: the flat 128x128; Classic, Album only: the tilted
+  cover's middle) to `cover_pick`: the 15-degree hue band holding the most chroma (pixels of chroma
+  48+, weighted by its square), its mean clamped to luma 110..170 and saturation 140..230. Under 4 %
+  coloured is grey: the chosen accent stays. `--np-accent` gives it to Now Playing's title, progress
+  fill and option pill only (Modern; the three bitmaps are filled in place). Album re-themes the
+  whole UI from the next render pass after the cover has stayed 1.5 s (`theme_album_due`,
+  `settings_album`): an accent-only apply with no file reads (pristine copies of the accent's
+  bitmaps, about 12 KB of heap, kept while Album is chosen; bitmaps the accent never touches are
+  skipped) and a walk that swaps the old accent's stored colours for the new one's instead of the
+  reload walk. 6..21 ms per album change in the emulator.
 - **Raw device handle and drive power.** Closing fatdir's block device lets storage power the drive
   down; the next write powers it up on the writing task: battery check (`0x08278aa0` → `0x082b1e54`),
   ATA reset pulse and drive supply (PMU register 0x52) with 10 + 10 + 50 ms sleeps (`0x082b1dec` →
@@ -304,7 +315,7 @@ added with a warning. `tools/qemu/videotest.py` checks playback end to end in th
   Classic. Only the font folder (`e_font_dir`, read when the fonts are scanned at boot) follows at
   the next start.
 - Assets live on Apple's resource volume (`rsrc`, the OS's volume 4, section 11) beside Apple's
-  own, never in region E: `Resources/Icons/Classic.bin` and `Modern.bin` (the 266 SF-replaced
+  own, never in region E: `Resources/Icons/Classic.bin` and `Modern.bin` (the 289 SF-replaced
   icons, `tools/sf/icon_sets.py`), `Resources/ModernFonts` (Apple's fonts with the SF Compact
   stand-ins for Helvetica) and `Resources/Theme/Package.bin` (Apple's bitmap data, 3.2 MB).
   `rsrc_open` (`osfile.c`) opens them as File::Open does for `Resources/Games/`: a stream on
@@ -319,6 +330,14 @@ added with a warning. `tools/qemu/videotest.py` checks playback end to end in th
   (`bmap_source`) from `Package.bin`, or from the set file for an SF icon. Only a live switch reads.
   `applied_key` per bitmap lets the UI-init apply skip what already holds its pixels. Colours
   (`COLR`, 4 bytes) keep heap copies.
+- Modern chrome (`docs/MODERN-AUDIT.md` lists what was found): `modern_fill` in theme.c is a
+  table of bitmap id ranges with a Dark and a Light colour (or the accent, or the page), filled by
+  `modern_late` after the theme lists so it wins over them; `modern_src` bitmaps are rebuilt from
+  Apple's pixels each apply (the menu pane keeps Apple's drop shadow; calendar cells keep a quarter of
+  their shading, placeholder tiles go dark in Dark). Modern COLRs are the `mcolr` table in
+  `theme_apply`. Rewriting a screen's `SSin` slots (for example the Stopwatch's status bar
+  template) makes the screen fail to build and the OS falls back to the menu: retheme the
+  slot's bitmaps instead.
 - Charging screen (Modern): the OS builds the battery from slices sharing one frame (body rows
   22..96, then a reflection): `ChargingMode_Image_{Empty,Green}_CapLeft`, `_Middle` repeated,
   `Green_Middle_Cap` where the charge ends, `_CapRight` with the nub. `gen_sficons.py` (`chg`
@@ -367,7 +386,8 @@ row, Radio Regions canvases), added to a relocated copy of the resource index an
 (`e_settings_provider`). Library: "Sync library now" (restart; the boot syncs) and "Power state to
 log". Hearing rows are value rows cloned from Clicker (kind 12, value text in SORC role 10). A Debug
 row pushing Apple's `Debug_MainMenu_Screen` is available (`ROWS` in the generator) but off: its Unit
-Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=`, `style=`, `limit=`,
+Tests asserts. Settings file: `FLAC\settings.txt` (`theme=`, `accent=` (a colour or `album`, then
+`album_fallback=` for grey covers), `style=`, `limit=`,
 `loudness=`, `fatigue=`, `crossfeed=`, `phones=`, `dither=shaped|tpdf` (no menu row), optional `city=`).
 
 ### Disk access rules

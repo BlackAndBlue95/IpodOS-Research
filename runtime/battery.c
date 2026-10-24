@@ -36,7 +36,8 @@ static uint32_t last_read;
 #define LOW_PCT 20
 static uint8_t ink[4][3];
 static int ink_gen[4] = { -1, -1, -1, -1 };
-static const uint8_t low_red[3] = { 255, 59, 48 };
+static const uint8_t low_red[3] = { 255, 59, 48 }, light_ink[3] = { 0, 0, 0 };
+int theme_dark(void);
 
 static int raw_to_pct(uint32_t raw)
 {
@@ -79,7 +80,7 @@ static void draw(uint32_t id, int pct, int bx, int by, int bw, int bh, int which
         ink[which][0] = d[0x20 + 4 * 63 + 2]; ink[which][1] = d[0x20 + 4 * 63 + 1]; ink[which][2] = d[0x20 + 4 * 63];
         ink_gen[which] = theme_gen;
     }
-    col = pct <= LOW_PCT ? low_red : ink[which];
+    col = pct <= LOW_PCT ? low_red : which >= 2 && !theme_dark() ? light_ink : ink[which];   /* black bars are page-coloured in Light */
     for (x = 0; x < 64; x++) { uint8_t *p = d + 0x20 + 4 * x; p[2] = col[0]; p[1] = col[1]; p[0] = col[2]; }
     digit[0] = pct / 100; digit[1] = pct / 10 % 10; digit[2] = pct % 10;
     for (i = 3 - n; i < 3; i++) tw += sf_digit_w[digit[i]] + (i < 2);

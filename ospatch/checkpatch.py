@@ -55,6 +55,9 @@ if fast_libc:   # --fast-libc: kfix_libc holds Apple's IRAM libc routines
 dither = 'dither565' in sym and dw(sym['dither565']) == 1
 if dither:      # --dither: mkpatch18 sets the switch
     struct.pack_into('<I', e_expect, sym['dither565'] - E, 1)
+np_accent = 'np_accent' in sym and dw(sym['np_accent']) == 1
+if np_accent:   # --np-accent: likewise
+    struct.pack_into('<I', e_expect, sym['np_accent'] - E, 1)
 check(bytes(dram[E - 0x08000000:E - 0x08000000 + len(e)]) == bytes(e_expect), 'region E at %#x after the copy and BSS zeroing (index entries excepted)' % E)
 check(rw_exec + rw_len == E + len(e), 'copy ends exactly at the end of E')
 check(zi_base + zi_len <= E, 'BSS (%#x..%#x) stays below E' % (zi_base, zi_base + zi_len))
@@ -197,5 +200,6 @@ else:
     check(dw(0x08983ea8) == sym.get('e_kern_glyph'), 'TrueType glyph metrics slot 08983ea8 -> e_kern_glyph')
     for at, _w in KERN_RUNS: br(at, 'e_kern_run')
 check(True, 'RGB565 dithering %s' % ('on' if dither else 'off'))
+check(True, 'Now Playing cover accent %s' % ('on' if np_accent else 'off'))
 print('ALL OK' if not fails else '%d FAILED' % fails)
 sys.exit(1 if fails else 0)

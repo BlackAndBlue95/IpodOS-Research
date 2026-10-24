@@ -94,7 +94,7 @@ void dose_tick(void)
 /* library load: what was heard since the last write, if anything */
 void dose_commit(void) { if (unsaved) dose_save(); }
 
-/* "Sound dose 37% this week" */
+/* "Dose 37% this week" (one line in the preview pane) */
 const char *dose_text(void)
 {
     static char buf[40];
@@ -102,7 +102,7 @@ const char *dose_text(void)
     int n = 0;
     const char *s;
     char t[12]; int m = 0;
-    for (s = "Sound dose "; *s; s++) buf[n++] = *s;
+    for (s = "Dose "; *s; s++) buf[n++] = *s;
     if (p < 100) { buf[n++] = '0' + p / 10; buf[n++] = '.'; buf[n++] = '0' + p % 10; }
     else { p /= 10; do t[m++] = '0' + p % 10; while (p /= 10); while (m) buf[n++] = t[--m]; }
     for (s = "% this week"; *s; s++) buf[n++] = *s;

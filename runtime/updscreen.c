@@ -75,7 +75,8 @@ void updscreen_begin(void)
     rect(BAR_X, BAR_Y, BAR_W, BAR_H, 0x0000);
 }
 
-/* ---- boot console: lines added below the bootloader's, in a 5x7 font on its 6x8 grid ---- */
+/* ---- boot status: the latest step centred on a black screen, its 5x7 font drawn at twice the
+   size with smoothed corners, and a thin bar for the steps done (the full log is FLAC\rtlog.txt) ---- */
 static const char glyph_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:/.-,()%"
                                   "abcdefghijklmnopqrstuvwxyz[]>_+'=!";
 static const uint8_t glyphs[][7] = {
@@ -109,11 +110,13 @@ static const uint8_t glyphs[][7] = {
     { 0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000 }, { 0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000 },
     { 0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000 }, { 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100 },
 };
-#define CON_X 0
-#define CON_Y 64                               /* below the bootloader's lines (sysfont, 8 px each) */
-#define CON_ROWS 22
-#define CON_CHARS 53                           /* 6 px per character */
-static int boot_text, con_row;
+#define CON_Y 140                              /* the status line: 16 px, 12 px per character */
+#define CON_CHARS 26
+#define STEP_X 100                             /* the steps bar */
+#define STEP_Y 184
+#define STEP_W 120
+#define STEP_N 10                              /* about as many steps as a boot prints */
+static int boot_text, steps;
 static char con_last[16];                      /* the line a status may rewrite in place */
 
 /* from the library load at boot until Apple's LCD init: the bootloader's panel set-up is still in place */
@@ -123,21 +126,24 @@ void bootscreen_begin(void)
     ok = 1; boot_text = 1;
     cmd16 = t >= 2;
     cmd_mode = cmd16 ? MODE_P18 : MODE_P8;
+    rect(0, 0, 320, 240, 0x0000);              /* the bootloader's lines go */
+    rect(STEP_X, STEP_Y, STEP_W, 3, 0x2945);
 }
 void bootscreen_end(void) { boot_text = 0; }
 
-/* one console row: the text, the rest of the row cleared */
-static void con_draw(int row, const char *s)
+static int glyph_on(int k, int gx, int gy) { return k != 0xff && gx >= 0 && gx < 5 && gy >= 0 && gy < 7 && (glyphs[k][gy] >> (4 - gx) & 1); }
+/* the status line, centred; a doubled pixel's outer quarter is grey where two of its neighbours meet */
+static void con_line(int row, const char *s, int len)
 {
-    int x0 = CON_X, y0 = CON_Y + row * 8, w = CON_CHARS * 6, h = 8, x, y, xe = x0 + w - 1, ye = y0 + h - 1;
+    int n = 0, x0, y0 = CON_Y + 18 * row, w = CON_CHARS * 12, h = 16, x, y, xe, ye;
     uint8_t idx[CON_CHARS];
     uint32_t saved;
-    for (x = 0; x < CON_CHARS; x++) {
-        char c = s && *s ? *s++ : ' ';
+    while (n < CON_CHARS && n < len && s[n]) {
         int k;
-        for (k = 0; glyph_chars[k] && glyph_chars[k] != c; k++);
-        idx[x] = glyph_chars[k] ? (uint8_t)k : 0xff;
+        for (k = 0; glyph_chars[k] && glyph_chars[k] != s[n]; k++);
+        idx[n++] = glyph_chars[k] ? (uint8_t)k : 0xff;
     }
+    x0 = (320 - w) / 2; xe = x0 + w - 1; ye = y0 + h - 1;
     if (!ok || !boot_text) return;
     saved = LCD_CON;
     con(cmd_mode);
@@ -152,41 +158,49 @@ static void con_draw(int row, const char *s)
     con(MODE_P16);
     for (y = 0; y < h && ok; y++)
         for (x = 0; x < w && ok; x++) {
-            int ch = x / 6, gx = x % 6, on = 0;
-            if (idx[ch] != 0xff && gx < 5 && y < 7) on = glyphs[idx[ch]][y] >> (4 - gx) & 1;
-            dat(on ? 0xffff : 0x0000);
+            int c = (x - (w - n * 12) / 2), ch = c / 12, gx = c % 12 / 2, gy = y / 2 - 1, dx = c % 2 ? 1 : -1, dy = y % 2 ? 1 : -1, k;
+            uint16_t px = 0x0000;
+            if (c >= 0 && ch < n && c % 12 < 10) {
+                k = idx[ch];
+                if (glyph_on(k, gx, gy)) px = 0xe71c;
+                else if (glyph_on(k, gx + dx, gy) && glyph_on(k, gx, gy + dy)) px = 0x738e;
+            }
+            dat(px);
         }
     con(saved);
 }
-
-/* "[  1.23] text" on the next row, as a Linux boot does; the rows wrap to the top when full */
-void bootscreen_print(const char *s)
+/* two lines at most, broken at the last space that fits */
+static void con_draw(const char *s)
 {
-    char line[CON_CHARS + 1];
-    uint32_t cs = TIMER_E / 10000;                 /* hundredths of a second */
-    int n = 0, k;
-    char t[8];
-    if (!boot_text) return;
-    line[n++] = '[';
-    for (k = 0; k < 7; k++) { t[6 - k] = k == 2 ? '.' : (k > 3 && !cs) ? ' ' : '0' + cs % 10; if (k != 2) cs /= 10; }
-    t[7] = 0;
-    for (k = 0; k < 7 && n < CON_CHARS; k++) line[n++] = t[k];
-    line[n++] = ']'; line[n++] = ' ';
-    while (*s && n < CON_CHARS) line[n++] = *s++;
-    line[n] = 0;
-    if (con_row >= CON_ROWS) con_row = 0;
-    con_draw(con_row++, line);
-    con_last[0] = 0;
+    int n = 0, cut;
+    while (s[n]) n++;
+    cut = n;
+    if (n > CON_CHARS) for (cut = CON_CHARS; cut > 0 && s[cut] != ' '; cut--);
+    if (!cut) cut = CON_CHARS;
+    con_line(0, s, cut);
+    con_line(1, s + cut + (s[cut] == ' '), n);
 }
 
-/* a progress message: rewrites the previous row while it starts the same way ("Reading tags 9/52") */
+/* the next step: shown alone, and one more of the bar */
+void bootscreen_print(const char *s)
+{
+    int x;
+    if (!boot_text) return;
+    con_draw(s);
+    con_last[0] = 0;
+    if (steps < STEP_N) steps++;
+    x = STEP_W * steps / STEP_N;
+    rect(STEP_X, STEP_Y, x, 3, 0xe71c);
+}
+
+/* a progress message: rewrites the line, the bar stays, while it starts the same way ("Reading tags 9/52") */
 void bootscreen_status(const char *s)
 {
     int k;
     if (!boot_text) return;
     for (k = 0; k < 12 && s[k] && s[k] == con_last[k]; k++);
-    if (con_last[0] && k == 12 && con_row) con_row--;
-    bootscreen_print(s);
+    if (con_last[0] && k == 12) con_draw(s);
+    else bootscreen_print(s);
     for (k = 0; k < 15 && s[k]; k++) con_last[k] = s[k];
     con_last[k] = 0;
 }

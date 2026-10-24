@@ -49,7 +49,7 @@ try:
     for k in keys:
         if k.startswith('wait'): time.sleep(float(k[4:] or 1)); continue
         if k == 'shot': n += 1; shot('%s-%02d' % (out, n)); continue
-        monitor('sendkey %s%s' % (k, ' 400' if k in ('ret', 'w') else '')); time.sleep(0.6)
+        monitor('sendkey %s%s' % (k, ' 400' if k in ('ret', 'w', 'a', 'd') else '')); time.sleep(0.6)
     if not n: time.sleep(0.5); shot(out)
     time.sleep(1)
 finally:

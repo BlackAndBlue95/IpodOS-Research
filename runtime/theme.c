@@ -56,12 +56,25 @@ void *theme_lcd;
 static const uint8_t accents[][3] = {
     { 0x0A, 0x84, 0xFF }, { 0xBF, 0x5A, 0xF2 }, { 0xFF, 0x37, 0x5F }, { 0xFF, 0x45, 0x3A },
     { 0xFF, 0x9F, 0x0A }, { 0xFF, 0xD6, 0x0A }, { 0x30, 0xD1, 0x58 }, { 0x8E, 0x8E, 0x93 } };
-static const char *const accent_names[] = { "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite" };
+static const char *const accent_names[] = { "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite", "album" };
 #define NACCENT 8
+#define ACCENT_ALBUM 8   /* the playing cover's colour; grey covers take theme_album_base */
 
 int theme_mode;          /* 0 light, 1 dark */
-int theme_accent;        /* index into accents */
+int theme_accent;        /* index into accents, or ACCENT_ALBUM */
+int theme_album_base;    /* Album's fallback: the last colour chosen */
 static int applied_mode = -1, applied_accent = -1, src_ok = -1;
+int theme_dark(void) { return applied_mode != 0; }   /* the applied theme is Dark (also before the first apply) */
+uint32_t np_accent;      /* mkpatch --np-accent: Now Playing's accent elements follow the cover */
+static uint8_t cover_rgb[3], album_rgb[3];
+static int cover_ok, album_ok;           /* a pick for the cover on screen; the one the theme was applied with */
+static uint32_t album_serial;            /* bumped per applied album colour (bitmap keys) */
+/* the RGB an accent index stands for */
+static const uint8_t *acc_rgb(int accent)
+{
+    if (accent == ACCENT_ALBUM) return album_ok ? album_rgb : accents[theme_album_base & 7];
+    return accents[accent < 0 || accent >= NACCENT ? 0 : accent];
+}
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static void wr32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
@@ -147,10 +160,12 @@ static void stat_px(struct stats *s, int r, int g, int b, int a)
     c = tr_chroma(r, g, b); if (c > s->cmax) s->cmax = c;
     L = tr_lum(r, g, b); if (L < s->lmin) s->lmin = L; if (L > s->lmax) s->lmax = L;
 }
+static int px_acc;                                /* set when the accent coloured a pixel */
 static void theme_px(uint8_t rgb[3], int a, int cls, const struct stats *s, const uint8_t *acc, int mode)
 {
     uint8_t o[3];
     if (!a) return;
+    if (acc && (cls == 2 ? tr_chroma(rgb[0], rgb[1], rgb[2]) > 24 : !cls && tr_is_apple_blue(rgb[0], rgb[1], rgb[2]))) px_acc = 1;
     if (cls == 2) {                                /* accent icon: coloured pixels take the accent hue in both themes */
         if (tr_chroma(rgb[0], rgb[1], rgb[2]) > 24) tr_accent_px(rgb[0], rgb[1], rgb[2], acc, o);
         else if (mode) tr_chrome_px(rgb[0], rgb[1], rgb[2], acc, 0, o);
@@ -201,15 +216,12 @@ static void flatten_bar(uint8_t *d, uint32_t fmt, uint32_t stride, uint32_t w, u
         L = lsum / cnt; nrows++; spread += lmax - lmin; if (L < rowmin) rowmin = L; if (L > rowmax) rowmax = L;
     }
     if (!nrows || !n) return;
-    /* StatusBarWhite_Background takes the page colour. Background_LightBlue (the main menu's right
-       pane, behind a white note icon and white text) does too in Dark; in Light the page colour is
-       white, so it is flattened to its own average grey and the white contents stay readable */
-    page = id == 0x0dad00f6 || (id == 0x0dad00f9 && mode);
-    if (id == 0x0dad00f9 && !mode) { flat[0] = sr / n; flat[1] = sg / n; flat[2] = sb / n; goto fill; }
+    /* StatusBarWhite_Background and Background_LightBlue (the main menu's right pane, and the
+       Stopwatch, Radio, lock and empty-library screens) take the page colour */
+    page = id == 0x0dad00f6 || id == 0x0dad00f9;
     if (!page && (spread / nrows > 12 || rowmax - rowmin < 16)) return;
     if (page) { flat[0] = theme_pal_white[0]; flat[1] = theme_pal_white[1]; flat[2] = theme_pal_white[2]; }
     else { flat[0] = sr / n; flat[1] = sg / n; flat[2] = sb / n; }
-fill:
     if (fmt == 0x64 || fmt == 0x65) {
         uint32_t cnt = rd32(d + 0x1c), i;
         for (i = 0; i < cnt; i++) { uint8_t *p = d + 0x20 + 4 * i; if (!p[3]) continue; p[2] = flat[0]; p[1] = flat[1]; p[0] = flat[2]; }
@@ -289,7 +301,7 @@ static void patch_mov_imm(uint32_t at, uint8_t imm)
 static void gradient_for(int mode, int accent, uint8_t top[3], uint8_t bottom[3])
 {
     if (!mode && !accent) { top[0] = 0x58; top[1] = 0x98; top[2] = 0xe8; bottom[0] = 0x28; bottom[1] = 0x64; bottom[2] = 0xd0; return; }
-    const uint8_t *a = accents[accent];
+    const uint8_t *a = acc_rgb(accent);
     int h = tr_hue(a[0], a[1], a[2]), v = a[0] > a[1] ? (a[0] > a[2] ? a[0] : a[2]) : (a[1] > a[2] ? a[1] : a[2]);
     int s = v ? tr_chroma(a[0], a[1], a[2]) * 255 / v : 0, vt = v * 108 / 100;
     tr_hsv_to_rgb(h, s, vt > 255 ? 255 : vt, top);
@@ -301,7 +313,7 @@ static void apply_code_colours(int mode, int accent)
     uint8_t top[3], bottom[3], o[3];
     int i;
     gradient_for(mode, accent, top, bottom);
-    if (theme_style) { const uint8_t *a = accents[accent]; for (i = 0; i < 3; i++) top[i] = bottom[i] = a[i]; }   /* Modern: flat accent */
+    if (theme_style) { const uint8_t *a = acc_rgb(accent); for (i = 0; i < 3; i++) top[i] = bottom[i] = a[i]; }   /* Modern: flat accent */
     for (i = 0; i < 3; i++) { HL_TOP[i] = top[i]; HL_BOTTOM[i] = bottom[i]; }
     /* style 1 gradient: stock #09A4E1 -> #0063D3 with edges #96C5DA / #004386, else the accent */
     {
@@ -311,7 +323,7 @@ static void apply_code_colours(int mode, int accent)
             et[0] = 0x96; et[1] = 0xc5; et[2] = 0xda; eb[0] = 0x00; eb[1] = 0x43; eb[2] = 0x86;
             cur[0] = 0x31; cur[1] = 0x6b; cur[2] = 0xde;
         } else {
-            const uint8_t *a = accents[accent];
+            const uint8_t *a = acc_rgb(accent);
             int h = tr_hue(a[0], a[1], a[2]), v = a[0] > a[1] ? (a[0] > a[2] ? a[0] : a[2]) : (a[1] > a[2] ? a[1] : a[2]);
             int s = v ? tr_chroma(a[0], a[1], a[2]) * 255 / v : 0, vt = v * 120 / 100;
             tr_hsv_to_rgb(h, s * 60 / 100, vt > 255 ? 255 : vt, et);     /* light edge: paler, brighter */
@@ -394,10 +406,18 @@ __attribute__((naked, section(".text.entry"), used)) void e_lcd_clear(void)
  * clear with glClearColorx(1, 1, 1, 1) (0x082c5f14) before blitting the art over the view. Both
  * calls are redirected here, to the theme's surface colour with the same alpha. */
 #define os_clear_colour ((void (*)(uint32_t, uint32_t, uint32_t, uint32_t))0x082c5f14)
+/* Cover Flow's captions come up in their stored colour: its first clear after a pause asks the
+   next render pass (render_c) for a walk */
+static int cf_walk_due;
+static uint32_t cf_last;
 __attribute__((used, noinline, section(".text.entry"))) void e_art_clear(uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
     CRUMB();
     (void)r; (void)g; (void)b;
+    if (__builtin_return_address(0) == (void *)0x08163a70) {
+        if (TIMER_E - cf_last > 1000000) cf_walk_due = 1;
+        cf_last = TIMER_E;
+    }
     os_clear_colour(theme_pal_white[0] * 0x10000u / 255, theme_pal_white[1] * 0x10000u / 255, theme_pal_white[2] * 0x10000u / 255, a);
 }
 
@@ -547,15 +567,50 @@ static void theme_named(int mode, int accent, const uint8_t *acc)
 static int walk_mode, walk_accent, walk_n, walk_live;
 static void colr_variants(uint32_t v, int accent, uint8_t dark[3], uint8_t light[3])
 {
-    const uint8_t *acc = accents[accent];
+    const uint8_t *acc = acc_rgb(accent);
     int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
     tr_chrome_px(r, g, b, acc, 0, dark);
     if (accent && tr_is_apple_blue(r, g, b)) tr_accent_px(r, g, b, acc, light);
     else { light[0] = r; light[1] = g; light[2] = b; }
 }
+/* Album re-theme: the colours the previous accent made (its raw RGB, the blue COLRs' variants) and
+   this accent's; the walk swaps them, in place of the reload walk */
+static uint8_t acc_pair[24][6], from_rgb[3];
+static int npair, walk_pairs, from_idx = -1;
+static void acc_pairs(int mode, int to_idx)
+{
+    uint32_t i, k, size, v;
+    const uint8_t *src, *to = acc_rgb(to_idx);
+    uint8_t p[6];
+    npair = 0;
+    for (i = 0; i <= sizeof theme_colr / 4; i++) {
+        if (!i) { memcpy(p, from_rgb, 3); memcpy(p + 3, to, 3); }
+        else {
+            if (!(src = orig_of(T_COLR, theme_colr[i - 1], &size)) || size < 4) continue;
+            v = rd32(src); p[0] = p[3] = v >> 16; p[1] = p[4] = v >> 8; p[2] = p[5] = v;
+            if (!tr_is_apple_blue(p[0], p[1], p[2])) continue;
+            if (mode) { tr_chrome_px(p[0], p[1], p[2], from_rgb, 0, p); tr_chrome_px(p[3], p[4], p[5], to, 0, p + 3); }
+            else {    /* Light keeps Apple's blue for the Blue accent */
+                if (from_idx) tr_accent_px(p[0], p[1], p[2], from_rgb, p);
+                if (to_idx) tr_accent_px(p[3], p[4], p[5], to, p + 3);
+            }
+        }
+        if (!e_memcmp(p, p + 3, 3)) continue;
+        for (k = 0; k < (uint32_t)npair && e_memcmp(acc_pair[k], p, 3); k++);
+        if (k == (uint32_t)npair && npair < 24) memcpy(acc_pair[npair++], p, 6);
+    }
+}
+static int remap_acc(uint8_t *c)
+{
+    int k;
+    for (k = 0; k < npair; k++)
+        if (!e_memcmp(c, acc_pair[k], 3)) { memcpy(c, acc_pair[k] + 3, 3); walk_n++; return 1; }
+    return 0;
+}
 static void remap_colour(uint8_t *c)
 {
     uint32_t i, size;
+    if (walk_pairs) { remap_acc(c); return; }
     for (i = 0; i < sizeof theme_colr / 4; i++) {
         const uint8_t *src = orig_of(T_COLR, theme_colr[i], &size);
         uint8_t dark[3], light[3], *want;
@@ -593,6 +648,7 @@ static int ptr_ok(uint32_t p) { return !(p & 3) && p >= 0x08a00000 && p < 0x0a00
 static void remap_text(uint8_t *c)
 {
     int L;
+    if (walk_pairs) { remap_acc(c); return; }
     if (!c[3] || tr_chroma(c[0], c[1], c[2]) > 24) return;
     L = tr_lum(c[0], c[1], c[2]);
     if (walk_mode && L < 0x60) { c[0] = theme_text[0]; c[1] = theme_text[1]; c[2] = theme_text[2]; walk_n++; }
@@ -680,7 +736,7 @@ static void np_title_accent(uint8_t *view, int accent)
     uint32_t nl, i;
     uint8_t *t[10];
     if (!theme_style || rd32(view) != 0x0898b884 || rd32(view + 0x44) != 0x00007f01 || !(rd32(view + 0xf0) & 0x800)) return;
-    a = accents[accent < 0 || accent >= NACCENT ? 0 : accent];
+    a = (np_accent || theme_accent == ACCENT_ALBUM) && cover_ok ? cover_rgb : acc_rgb(accent);
     nl = rd32(view + 0x244);
     t[0] = view + 0xf4; t[1] = view + 0xa4 + 0x11;
     for (i = 0; i < nl && i < 8; i++) t[2 + i] = view + 0x248 + 108 * i + 12 + 0x11;
@@ -721,14 +777,18 @@ static void walk_view(uint8_t *view, int depth)
 /* After a live switch the screen repaints only what a view invalidated, so the status bar and
    other long-lived windows are repainted here. Slot 0x70 (0x08263b24) draws a view and its
    children within a rectangle. Called on the root with the full screen, it repaints everything. */
-void theme_redraw_all(void)
+/* layers 0: the visible view tree only. Drawing every layer also draws hidden screens, whose art
+   views then ask for their covers all at once */
+void theme_redraw(int layers)
 {
     uint8_t *root = ((uint8_t *(*)(void))0x0811340c)();
     int32_t full[4] = { 0, 0, 240, 320 };
     if (root && ptr_ok((uint32_t)root)) ((void (*)(void *, int, void *))((void **)rd32(root))[0x70 / 4])(root, 0, full);
+    if (!layers) return;
     for_each_layer_root(layer_draw, 0);
     log_s("   theme: full redraw of every layer requested\n");
 }
+void theme_redraw_all(void) { theme_redraw(1); }
 void theme_walk(int mode, int accent)
 {
     uint32_t tw0 = TIMER_E;
@@ -739,6 +799,16 @@ void theme_walk(int mode, int accent)
     children_vt = rd32(root + 0xa8);
     walk_view(root, 0);
     log_s("   theme: live views remapped "); log_d(walk_n); log_s(" of "); log_d(walk_nodes); log_s(" ("); log_d((int)((TIMER_E - tw0) / 1000)); log_s(" ms)\n");
+}
+/* after an accent-only apply: the previous accent's colours in live views become this one's */
+void theme_walk_accent(void)
+{
+    if (from_idx < 0) return;
+    acc_pairs(applied_mode, applied_accent);
+    walk_pairs = 1;
+    theme_walk(applied_mode, applied_accent);
+    walk_pairs = 0;
+    log_s("   theme: accent pairs "); log_d(npair); log_c('\n');
 }
 /* Now Playing lives outside the view tree until it is shown, so a switch cannot reach it. The
    remap runs again when its art is first requested after a switch. */
@@ -755,6 +825,11 @@ static void __attribute__((used)) render_c(uint32_t *r)
     CRUMB();
     uint8_t *root;
     { void libload_first_frame(void); libload_first_frame(); }
+    { int theme_album_due(void); void settings_album(void); if (theme_album_due()) settings_album(); }
+    if (cf_walk_due && applied_mode >= 0) {
+        cf_walk_due = 0;
+        theme_walk(applied_mode, applied_accent);
+    }
     if (theme_walk_pending != 2) return;
     theme_walk_pending = 0;
     /* the render pass draws layers: screen+0xe8 is a list whose array (+0x80, count +0x84) holds
@@ -922,15 +997,18 @@ static void sf_apply(const uint8_t *acc, int modern)
         uint8_t *o = 0, *pal;
         uint32_t n = 0, np;
         for (i = 0; i < SF_N; i++) if (sf_tab[i][0] == sf_accent[j]) { o = (uint8_t *)PKG_DATA + sf_tab[i][3]; n = sf_tab[i][1]; }
-        if (!o || (o[0] != 0x64 && o[0] != 0x65)) continue;
-        np = rd32(o + 0x1c);
-        if (0x20 + 4 * np > n) continue;
-        if (!sf_pal[j] && (sf_pal[j] = os_malloc(4 * np))) memcpy(sf_pal[j], o + 0x20, 4 * np);
+        uint32_t at;                                              /* the palette, or an ARGB image's pixels */
+        if (!o) continue;
+        if (o[0] == 0x64 || o[0] == 0x65) { np = rd32(o + 0x1c); at = 0x20; }
+        else if ((o[0] | o[1] << 8) == 0x1888) { np = (n - 0x1c) / 4; at = 0x1c; }
+        else continue;
+        if (at + 4 * np > n) continue;
+        if (!sf_pal[j] && (sf_pal[j] = os_malloc(4 * np))) memcpy(sf_pal[j], o + at, 4 * np);
         if (!(pal = sf_pal[j]) || !acc) continue;
         /* base blue (0,122,255) mixed with white: t = how blue; the mix moves to the accent */
         for (m = 0; m < np; m++) {
             const uint8_t *p = pal + 4 * m;
-            uint8_t *d = o + 0x20 + 4 * m;
+            uint8_t *d = o + at + 4 * m;
             uint32_t t = 255 - p[2], c;
             if (!p[3]) continue;
             for (c = 0; c < 3; c++) d[2 - c] = 255 - ((255 - acc[c]) * t + 127) / 255;
@@ -959,6 +1037,11 @@ static uint32_t sf_file_off(int modern, uint32_t k) { (void)modern; (void)k; ret
 #define NLIST (sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 + sizeof theme_bmap_accent / 4)
 #define NWRITTEN 320
 static uint32_t written[NWRITTEN], applied_key[NLIST], applied_sum[NLIST], pkg_first, pkg_len;
+static uint8_t acc_dep[NLIST];           /* themed without the accent: 1, with it: 2, not known: 0 */
+/* Album: the pristine pixels of the bitmaps the accent colours (only the palette of an indexed one,
+   whose indices the theme never changes), so a re-theme reads nothing from disk; about 12 KB */
+static uint8_t *acc_src[NLIST];
+int theme_no_disk;                       /* an Album re-theme (from a render pass): no file reads */
 /* a sample of a bitmap's bytes: an apply skips one still holding what it wrote */
 static uint32_t bmap_sum(uint32_t id)
 {
@@ -985,7 +1068,7 @@ static void forget(uint32_t id)
 {
     uint32_t i;
     for (i = 0; i < (uint32_t)nwritten; i++) if (written[i] == id) { written[i] = written[--nwritten]; break; }
-    for (i = 0; i < NLIST; i++) if (list_id(i) == id) applied_key[i] = 0;
+    for (i = 0; i < NLIST; i++) if (list_id(i) == id) { applied_key[i] = 0; if (acc_src[i]) { os_free(acc_src[i]); acc_src[i] = 0; } }
 }
 static int read_at(File **fp, const char *path, uint32_t off, uint8_t *d, uint32_t n)
 {
@@ -1019,6 +1102,27 @@ static const uint8_t *bmap_source(uint32_t id, uint32_t *size)
     off = (uint32_t)(cur - (uint8_t *)PKG_DATA);              /* Apple's bitmaps never move */
     if (off < pkg_first || off + *size > pkg_first + pkg_len) return 0;
     return read_at(&src_pkg, pkgfile, 16 + off - pkg_first, src_buf, *size) ? 0 : src_buf;
+}
+static int is_pal(const uint8_t *d) { return (d[0] == 0x64 || d[0] == 0x65) && !d[1]; }
+static const uint8_t *cached_source(uint32_t i, uint32_t id, uint32_t *size)
+{
+    const uint8_t *cur = pkg_find(T_BMAP, id, size);
+    if (!cur || !acc_src[i] || !is_pal(cur)) return cur ? acc_src[i] : 0;
+    if (*size > src_cap) {
+        if (src_buf) os_free(src_buf);
+        src_cap = 0;
+        if (!(src_buf = os_malloc(*size))) return 0;
+        src_cap = *size;
+    }
+    memcpy(src_buf, cur, *size);
+    memcpy(src_buf + 0x20, acc_src[i], 4 * rd32(cur + 0x1c));
+    return src_buf;
+}
+static void cache_source(uint32_t i, const uint8_t *src, uint32_t size)
+{
+    uint32_t n = is_pal(src) ? 4 * rd32(src + 0x1c) : size;
+    if (acc_src[i] || theme_accent != ACCENT_ALBUM || (is_pal(src) && 0x20 + n > size) || !(acc_src[i] = os_malloc(n))) return;
+    memcpy(acc_src[i], is_pal(src) ? src + 0x20 : src, n);
 }
 static void sources_close(void)
 {
@@ -1098,21 +1202,184 @@ E_ENTRY void e_opbar_ink(void *dst, uint8_t *rgba)
     CRUMB();
     uint8_t c[4];
     c[0] = rgba[0]; c[1] = rgba[1]; c[2] = rgba[2]; c[3] = rgba[3];
-    if (theme_style) {
-        if (c[0] == 0x25 && c[1] == 0x25 && c[2] == 0x25) c[0] = c[1] = c[2] = 0xc8;
+    if (theme_style) {                                  /* Light: dark labels on the light track */
+        if (c[0] == 0x25 && c[1] == 0x25 && c[2] == 0x25) c[0] = c[1] = c[2] = theme_dark() ? 0xc8 : 0x3c;
         else c[0] = c[1] = c[2] = 0xff;
     }
     ((void (*)(void *, uint8_t *))0x08267210)(dst, c);
 }
-/* every bitmap modern_bars fills, for the save before the first fill and the way back */
-static void for_each_modern_bar(void (*fn)(uint32_t id))
+/* Stopwatch_PlayPause_Image: the glossy black key becomes an iOS-style tinted button, the accent
+   over the page at 22 %, its play/pause glyph (the stock's light pixels) in the accent */
+#define SW_PLAYPAUSE 0x0dad0c96
+#define SW_SMALLPAUSE 0x0dad0c97                          /* the preview pane's state glyphs: the page's text colour */
+#define SW_SMALLPLAY  0x0dad0c98
+static void modern_playpause(int mode, const uint8_t *acc)
 {
-    static const uint32_t single[4] = { 0x0dad00f8, 0x0dad082e, 0x0dad0aa9, 0x0dad05a6 };   /* StatusBarBlack_Background, NowPlaying_StatusBar, Settings_About_Band, CoverFlow_Backside_Top */
-    uint32_t i;
+    uint32_t size, ssz, n, i;
+    const uint8_t *s;
+    uint8_t *d, body[3];
+    int k, w;
+    if (!acc || !(d = (uint8_t *)pkg_find(T_BMAP, SW_PLAYPAUSE, &size)) || (d[0] | d[1] << 8) != 0x65) return;
+    if (!(s = bmap_source(SW_PLAYPAUSE, &ssz)) || ssz != size || 0x20 + 4 * (n = rd32(d + 0x1c)) > size) return;
+    for (k = 0; k < 3; k++) body[k] = (acc[k] * 56 + (mode ? 0 : 255) * 200) >> 8;
+    for (i = 0; i < n; i++) {
+        const uint8_t *p = s + 0x20 + 4 * i;
+        uint8_t *q = d + 0x20 + 4 * i;
+        w = (tr_lum(p[2], p[1], p[0]) - 150) * 256 / 50;   /* the body tops out near 130, the glyph near 210 */
+        if (w < 0 || p[3] < 200) w = 0; else if (w > 256) w = 256;   /* the faint outer rim is body */
+        for (k = 0; k < 3; k++) q[2 - k] = (body[k] * (256 - w) + acc[k] * w) >> 8;
+        q[3] = p[3];
+    }
+}
+/* Apple's remaining glossy chrome, flat per theme: id ranges and their Dark and Light colours
+   (M_ACC the accent, M_PAGE the page, M_KEEP left to the theme lists). Filled after the lists. */
+#define M_ACC  0x01000000u
+#define M_PAGE 0x02000000u
+#define M_KEEP 0x04000000u
+static const struct { uint32_t first, last, dark, light; } modern_fill[] = {
+    { 0x0dad0848, 0x0dad0849, M_ACC, M_ACC },            /* NowPlaying_Blue_Star, _Blue_Dot */
+    { 0x0dad0852, 0x0dad0852, M_ACC, M_ACC },            /* NowPlaying_Large_Blue_Star */
+    { 0x0dad0853, 0x0dad0853, 0xebebf5, 0x3c3c43 },      /* NowPlaying_Dot: an unset rating */
+    { 0x0dad0847, 0x0dad0847, 0xebebf5, 0x3c3c43 },      /* NowPlaying_Star */
+    { 0x0dad084a, 0x0dad084a, 0xffffff, 0x1c1c1e },      /* NowPlaying_Large_Shuffle */
+    { 0x0dad0830, 0x0dad0832, 0xffffff, 0x1c1c1e },      /* NowPlaying_Shuffle, _Repeat, _Repeat_Once */
+    { 0x0dad0854, 0x0dad0857, 0xffffff, 0x1c1c1e },      /* NowPlaying volume speakers */
+    { 0x0dad084b, 0x0dad084b, M_KEEP, 0x000000 },        /* progress tracks: dark ink on the pale blur */
+    { 0x0dad084d, 0x0dad084d, M_KEEP, 0x000000 },
+    { 0x0dad084f, 0x0dad084f, M_KEEP, 0x3a3a3c },        /* NowPlaying_ProgressBar_Scrub */
+    { 0x0dad082f, 0x0dad082f, 0x000000, M_PAGE },        /* NowPlaying_Overlay: the video controls' bar, under the page's text */
+    { 0x0dad0144, 0x0dad0146, 0x2c2c2e, 0xf2f2f7 },      /* Lozenge_*_White: the confirmation tray */
+    { 0x0dad014d, 0x0dad014f, 0x3a3a3c, 0x8e8e93 },      /* OptionBar_White_Well_*: its labels are white */
+    { 0x0dad0150, 0x0dad0152, M_ACC, M_ACC },            /* OptionBar_White_Thumb_* */
+    { 0x0dad0220, 0x0dad0220, M_PAGE, M_PAGE },          /* DateTimePicker_Bar */
+    { 0x0dad0221, 0x0dad0221, M_ACC, M_ACC },            /* DateTimePicker_Selection */
+    { 0x0dad0222, 0x0dad0222, 0x2c2c2e, 0xe5e5ea },      /* DateTimePicker_Well */
+    { 0x0dad05c1, 0x0dad05c1, M_PAGE, M_PAGE },          /* Settings_DateTime_Capsule */
+    { 0x0dad05c2, 0x0dad05c2, M_ACC, M_ACC },
+    { 0x0dad02c5, 0x0dad02c5, M_PAGE, M_PAGE },          /* Alarms_Timer_Time_Panel */
+    { 0x0dad02c6, 0x0dad02c6, M_ACC, M_ACC },
+    { 0x0dad063e, 0x0dad063e, 0x2c2c2e, 0x2c2c2e },      /* LockScreen_TumblerBgnd: under white digits in both themes */
+    { 0x0dad063f, 0x0dad063f, M_ACC, M_ACC },            /* LockScreen_TumblerFocus */
+    { 0x0dad0337, 0x0dad0337, M_ACC, M_ACC },            /* Calendar_Hilite_Cell */
+    { 0x0dad0455, 0x0dad0455, 0x2c2c2e, 0xf2f2f7 },      /* WorldClock_Graybar: the city rows */
+    { 0x0dad05a6, 0x0dad05a6, 0x2c2c2e, M_ACC },         /* CoverFlow_Backside_Top: white text */
+    { 0x0dad0bca, 0x0dad0bca, 0xebebf5, 0x3c3c43 },      /* Settings_Legal */
+    { 0x0dad0bcc, 0x0dad0bcc, 0xffffff, 0x1c1c1e },      /* Settings_Language: the greetings */
+    { 0x0dad00f2, 0x0dad00f2, 0x2c2c2e, 0x2c2c2e },      /* System_QuickScroll: the wheel's letter */
+    { 0x0dad015f, 0x0dad0162, 0xffffff, 0x1c1c1e },      /* System_Overlay_Brightness/Volume glyphs on the HUD */
+    { 0x0dad0aad, 0x0dad0aad, 0xff375f, 0xff2d55 },      /* About capacity, iOS storage colours: audio */
+    { 0x0dad0abb, 0x0dad0abd, 0xff375f, 0xff2d55 },
+    { 0x0dad0aae, 0x0dad0aae, 0xbf5af2, 0xaf52de },      /* video */
+    { 0x0dad0abe, 0x0dad0ac0, 0xbf5af2, 0xaf52de },
+    { 0x0dad0aaf, 0x0dad0aaf, 0xffd60a, 0xffcc00 },      /* photos */
+    { 0x0dad0ac1, 0x0dad0ac3, 0xffd60a, 0xffcc00 },
+    { 0x0dad0ab0, 0x0dad0ab0, 0x98989d, 0x8e8e93 },      /* other */
+    { 0x0dad0ac4, 0x0dad0ac6, 0x98989d, 0x8e8e93 },
+    { 0x0dad0ab8, 0x0dad0aba, 0x3a3a3c, 0xe5e5ea },      /* free */
+    { 0x0dad0ab1, 0x0dad0ab3, 0x3a3a3c, 0xe5e5ea },
+    { 0x0dad0ab4, 0x0dad0ab6, M_ACC, M_ACC },            /* CapacityView_Simple_Fill */
+    { 0x0dad0111, 0x0dad0113, 0xff3b30, 0xff3b30 },      /* StatusBar*_Battery_Image_2..4 (under 20 %): red, as battery.c's */
+    { 0x0dad012a, 0x0dad012c, 0xff3b30, 0xff3b30 },
+};
+/* rebuilt from Apple's pixels each apply: the calendar cells, the placeholder tiles (the menu
+   pane's drop shadow stays Apple's) */
+#define CAL_PAGE 0x0dad02d7                       /* Settings_DateTime_Calendar: a dark page in Dark, for the white day */
+static const uint32_t modern_src[11] = { 0x0dad0335, 0x0dad0336, CAL_PAGE,
+    0x0dad00fb, 0x0dad00fc, 0x0dad00fd, 0x0dad00fe, 0x0dad00ff, 0x0dad0100, 0x0dad0101, 0 };
+/* every bitmap modern_bars fills, for the save before the first fill and the way back; with
+   late, also modern_late's (it saves those itself, after the theme lists have read theirs) */
+static void for_each_modern_bar(void (*fn)(uint32_t id), int late)
+{
+    static const uint32_t single[6] = { 0x0dad00f8, 0x0dad082e, 0x0dad0aa9, SW_PLAYPAUSE, SW_SMALLPAUSE, SW_SMALLPLAY };   /* StatusBarBlack_Background, NowPlaying_StatusBar, Settings_About_Band */
+    uint32_t i, id;
     for (i = 0; i < 6; i++) fn(modern_panel[i]);
     for (i = 0; i < 3; i++) { fn(modern_well[i]); fn(modern_thumb[i]); fn(modern_field[i]); fn(np_opt_well[i]); fn(np_opt_thumb[i]); }
-    for (i = 0; i < 4; i++) fn(single[i]);
+    for (i = 0; i < 6; i++) fn(single[i]);
     for (i = 0; modern_mean[i]; i++) fn(modern_mean[i]);
+    if (!late) return;
+    for (i = 0; i < sizeof modern_fill / sizeof modern_fill[0]; i++)
+        for (id = modern_fill[i].first; id <= modern_fill[i].last; id++) fn(id);
+    for (i = 0; modern_src[i]; i++) fn(modern_src[i]);
+}
+/* each palette entry or pixel of a bitmap through fn(rgb, alpha, arg) */
+static void bm_each(uint8_t *d, uint32_t size, void (*fn)(uint8_t *, uint8_t *, const void *), const void *arg)
+{
+    uint32_t fmt = d[0] | d[1] << 8, stride = d[4] | d[5] << 8, h = rd32(d + 0x10), w = rd32(d + 0x14), x, y, n, i;
+    uint8_t c[3], a;
+    if (fmt == 0x64 || fmt == 0x65) {
+        if (0x20 + 4 * (n = rd32(d + 0x1c)) > size) return;
+        for (i = 0; i < n; i++) { uint8_t *p = d + 0x20 + 4 * i; c[0] = p[2]; c[1] = p[1]; c[2] = p[0]; fn(c, p + 3, arg); p[2] = c[0]; p[1] = c[1]; p[0] = c[2]; }
+    } else if (fmt == 0x1888) {
+        if (0x1c + stride * h > size) return;
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) { uint8_t *p = d + 0x1c + y * stride + 4 * x; c[0] = p[2]; c[1] = p[1]; c[2] = p[0]; fn(c, p + 3, arg); p[2] = c[0]; p[1] = c[1]; p[0] = c[2]; }
+    } else if (fmt == 0x565) {
+        if (0x1c + stride * h > size) return;
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+            uint8_t *p = d + 0x1c + y * stride + 2 * x;
+            uint32_t v = p[0] | p[1] << 8;
+            c[0] = (v >> 11) << 3; c[1] = ((v >> 5) & 63) << 2; c[2] = (v & 31) << 3; a = 255;
+            fn(c, &a, arg);
+            v = (uint32_t)(c[0] >> 3) << 11 | (uint32_t)(c[1] >> 2) << 5 | c[2] >> 3; p[0] = v; p[1] = v >> 8;
+        }
+    }
+}
+/* flat colour, a quarter of the stock's light and shade kept (the calendar's cell edges) */
+static void px_tint(uint8_t *c, uint8_t *a, const void *arg)
+{
+    const int *t = arg;
+    int L = tr_lum(c[0], c[1], c[2]) - t[3], k, v;
+    (void)a;
+    for (k = 0; k < 3; k++) { v = t[k] + L * 96 / 256; c[k] = v < 0 ? 0 : v > 255 ? 255 : v; }
+}
+/* a light placeholder tile turned dark: luminance mirrored into the dark range */
+static void px_dark_tile(uint8_t *c, uint8_t *a, const void *arg)
+{
+    int v = 283 - tr_lum(c[0], c[1], c[2]);
+    (void)a; (void)arg;
+    c[0] = c[1] = c[2] = v < 28 ? 28 : v > 255 ? 255 : v;
+}
+/* the calendar page's white (and its light greys) becomes the dark grouped grey; the red header stays */
+static void px_dark_page(uint8_t *c, uint8_t *a, const void *arg)
+{
+    int L = tr_lum(c[0], c[1], c[2]);
+    (void)a; (void)arg;
+    if (tr_chroma(c[0], c[1], c[2]) > 24 || L < 160) return;
+    c[0] = c[1] = 44 + (L - 160) / 8; c[2] = c[0] + 2;
+}
+static void px_opaque(uint8_t *c, uint8_t *a, const void *arg) { (void)c; (void)arg; if (*a >= 128) *a = 255; }
+static uint32_t src_key[sizeof modern_src / 4], src_sum[sizeof modern_src / 4];   /* what each holds, as the lists keep it */
+static void modern_late(int mode, const uint8_t *acc, uint32_t key)
+{
+    uint32_t i, id, size, ssz, v;
+    const uint8_t *s;
+    uint8_t *d, c[3];
+    for (i = 0; i < sizeof modern_fill / sizeof modern_fill[0]; i++) {
+        v = mode ? modern_fill[i].dark : modern_fill[i].light;
+        if (v & M_KEEP) continue;
+        if (v & M_ACC) { if (!acc) continue; c[0] = acc[0]; c[1] = acc[1]; c[2] = acc[2]; }
+        else if (v & M_PAGE) { c[0] = theme_pal_white[0]; c[1] = theme_pal_white[1]; c[2] = theme_pal_white[2]; }
+        else { c[0] = v >> 16; c[1] = v >> 8; c[2] = v; }
+        for (id = modern_fill[i].first; id <= modern_fill[i].last; id++)
+            if ((d = (uint8_t *)pkg_find(T_BMAP, id, &size))) { mark_written(id); bm_fill(d, size, c); }
+    }
+    for (i = 0; modern_src[i]; i++) {
+        id = modern_src[i];
+        if (src_key[i] == key && src_sum[i] == bmap_sum(id)) continue;   /* the UI-init apply: already this theme's */
+        if (!(d = (uint8_t *)pkg_find(T_BMAP, id, &size)) || !(s = bmap_source(id, &ssz)) || ssz != size) continue;
+        if (s != d) memcpy(d, s, size);
+        mark_written(id);
+        if (id == 0x0dad0335 || id == 0x0dad0336) {
+            int t[4] = { 242, 242, 247, 0 };             /* active cells: grouped grey; others: the page */
+            if (id == 0x0dad0336) { t[0] = theme_pal_white[0]; t[1] = theme_pal_white[1]; t[2] = theme_pal_white[2]; }
+            else if (mode) { t[0] = 44; t[1] = 44; t[2] = 46; }
+            t[3] = bm_mean(d, c) ? tr_lum(c[0], c[1], c[2]) : 128;
+            bm_each(d, size, px_tint, t);
+        } else if (id == CAL_PAGE) {
+            if (mode) bm_each(d, size, px_dark_page, 0);
+        } else if (mode) bm_each(d, size, px_dark_tile, 0);
+        src_key[i] = key; src_sum[i] = bmap_sum(id);
+    }
+    for (i = 0; i < 6; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, modern_panel[i], &size))) bm_each(d, size, px_opaque, 0);   /* Search's strip hides the list */
 }
 static void save_stock(uint32_t id) { mark_written(id); }
 static void restore_stock(uint32_t id)
@@ -1122,28 +1389,107 @@ static void restore_stock(uint32_t id)
     if (!is_written(id)) return;                           /* only what a Modern apply changed */
     if ((s = bmap_source(id, &size)) && !rsrc_write(T_BMAP, id, s, size)) forget(id);
 }
-static void classic_bars(void) { for_each_modern_bar(restore_stock); }
+static void classic_bars(void) { for_each_modern_bar(restore_stock, 1); }
 static void modern_bars(int mode, const uint8_t *acc)
 {
     static const uint8_t near_black[3] = { 28, 28, 30 }, band_dark[3] = { 44, 44, 46 }, band_light[3] = { 142, 142, 147 },
-                         well[3] = { 58, 58, 60 }, white[3] = { 255, 255, 255 };
+                         well[3] = { 58, 58, 60 }, light_well[3] = { 229, 229, 234 }, white[3] = { 255, 255, 255 }, black[3] = { 0, 0, 0 },
+                         hud_light[3] = { 242, 242, 247 };   /* Light: the HUDs and Search's strip, the page's text on them */
     uint32_t i, size;
     uint8_t *d, c[3];
-    for_each_modern_bar(save_stock);
-    for (i = 0; i < 6; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, modern_panel[i], &size))) bm_fill(d, size, band_dark);
+    for_each_modern_bar(save_stock, 0);
+    for (i = 0; i < 6; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, modern_panel[i], &size))) bm_fill(d, size, mode ? band_dark : hud_light);
     for (i = 0; i < 3; i++) {
-        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_well[i], &size))) bm_fill(d, size, well);
+        if ((d = (uint8_t *)pkg_find(T_BMAP, modern_well[i], &size))) bm_fill(d, size, mode ? well : light_well);
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_thumb[i], &size)) && acc) bm_fill(d, size, acc);
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_field[i], &size))) bm_fill(d, size, mode ? well : white);   /* typed text follows the theme */
-        if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_well[i], &size))) bm_fill(d, size, well);
+        if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_well[i], &size))) bm_fill(d, size, mode ? well : light_well);
         if ((d = (uint8_t *)pkg_find(T_BMAP, np_opt_thumb[i], &size)) && acc) bm_fill(d, size, acc);
     }
-    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad00f8, &size))) bm_fill(d, size, mode ? theme_pal_white : near_black);   /* StatusBarBlack_Background (About, USB) */
-    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad082e, &size))) bm_fill(d, size, near_black);   /* NowPlaying_StatusBar (Now Playing, charging): its text stays white */
-    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad05a6, &size))) bm_fill(d, size, band_dark);    /* CoverFlow_Backside_Top: the album header, white text */
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad00f8, &size))) bm_fill(d, size, theme_pal_white);   /* StatusBarBlack_Background (About, USB): battery.c inks its battery */
+    if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad082e, &size))) bm_fill(d, size, mode ? near_black : theme_pal_white);   /* NowPlaying_StatusBar (Stopwatch, charging; Now Playing draws its own) */
     if ((d = (uint8_t *)pkg_find(T_BMAP, 0x0dad0aa9, &size))) bm_fill(d, size, mode ? band_dark : band_light);   /* Settings_About_Band */
+    modern_playpause(mode, acc);
+    for (i = 0; i < 2; i++) if ((d = (uint8_t *)pkg_find(T_BMAP, SW_SMALLPAUSE + i, &size))) bm_fill(d, size, mode ? white : black);
     for (i = 0; modern_mean[i]; i++)
         if ((d = (uint8_t *)pkg_find(T_BMAP, modern_mean[i], &size)) && bm_mean(d, c)) bm_fill(d, size, c);
+}
+
+/* ---- cover accent: a vibrant colour picked from the cover Now Playing shows ---- */
+/* Now Playing's accent bitmaps, flat in Modern (progress fill, option bar pill, rating stars);
+   np_col keeps the colour the last apply left in each */
+#define NP_ACC_N 7
+static const uint32_t np_acc_bm[NP_ACC_N] = { 0x0dad084e, 0x0dad015c, 0x0dad015d, 0x0dad015e, 0x0dad0848, 0x0dad0849, 0x0dad0852 };
+static uint8_t np_col[NP_ACC_N][3];
+static void np_bitmaps(const uint8_t *c, int save)      /* c NULL: the saved colours back */
+{
+    uint32_t i, size, x, y;
+    uint8_t *d, px[4];
+    for (i = 0; i < NP_ACC_N; i++) {
+        if (!(d = (uint8_t *)pkg_find(T_BMAP, np_acc_bm[i], &size))) continue;
+        if (!save) { bm_fill(d, size, c ? c : np_col[i]); continue; }
+        for (y = 0; y < rd32(d + 0x10); y++) for (x = 0; x < rd32(d + 0x14); x++)
+            if (bm_px(d, d[0] | d[1] << 8, d[4] | d[5] << 8, x, y, px) && px[3] >= 128) {
+                np_col[i][0] = px[0]; np_col[i][1] = px[1]; np_col[i][2] = px[2]; goto next;
+            }
+    next:;
+    }
+}
+/* the hue band with the most chroma (pixels of chroma 48+ weighted by its square), its mean clamped
+   to luma 110..170 and saturation 140..230: 0 for a cover under 4 % coloured */
+static int cover_pick(const uint16_t *p, int stride, int w, int h, uint8_t out[3])
+{
+    uint32_t bin[24][4], sum[4], n = 0, hit = 0, best = 0, b, k, j, W, rgb[3];
+    int x, y, c, s, v, L, hue;
+    memset(bin, 0, sizeof bin); memset(sum, 0, sizeof sum);
+    for (y = 0; y < h; y += 2) for (x = 0; x < w; x += 2) {
+        uint32_t q = p[y * stride + x];
+        rgb[0] = (q >> 11) << 3; rgb[1] = ((q >> 5) & 63) << 2; rgb[2] = (q & 31) << 3; n++;
+        if ((c = tr_chroma(rgb[0], rgb[1], rgb[2])) < 48) continue;
+        b = (uint32_t)tr_hue(rgb[0], rgb[1], rgb[2]) * 24 / 1536; W = (uint32_t)(c * c) >> 6; hit++;
+        bin[b][3] += W; for (j = 0; j < 3; j++) bin[b][j] += rgb[j] * W;     /* at most 4096 * 255 * 1016: fits */
+    }
+    if (hit * 25 < n) return 0;
+    for (b = 0; b < 24; b++) if (bin[b][3] + bin[(b + 1) % 24][3] + bin[(b + 23) % 24][3] > bin[best][3] + bin[(best + 1) % 24][3] + bin[(best + 23) % 24][3]) best = b;
+    for (k = best + 23; k <= best + 25; k++) for (j = 0; j < 4; j++) sum[j] += bin[k % 24][j];
+    if (!sum[3]) return 0;
+    for (j = 0; j < 3; j++) rgb[j] = sum[j] / sum[3];
+    v = rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]);
+    s = v ? tr_chroma(rgb[0], rgb[1], rgb[2]) * 255 / v : 0;
+    s = s < 140 ? 140 : s > 230 ? 230 : s;
+    hue = tr_hue(rgb[0], rgb[1], rgb[2]);
+    tr_hsv_to_rgb(hue, s, 255, out);
+    L = tr_lum(out[0], out[1], out[2]);
+    k = theme_dark() ? 170 : 100;                   /* Light: darker, so it reads on the pale background */
+    if (L > (int)k) tr_hsv_to_rgb(hue, s, 255 * k / L, out);
+    else if (theme_dark() && L < 110) tr_hsv_to_rgb(hue, s * 145 / (255 - L), 255, out);
+    return 1;
+}
+static uint32_t album_due;               /* when an Album re-theme may run (TIMER_E), 0 none */
+/* art.c, once per cover Now Playing lays out (Modern: the flat cover; Classic: its middle) */
+void theme_cover(const uint16_t *p, int stride, int w, int h)
+{
+    uint8_t c[3];
+    int ok, was = cover_ok;
+    uint32_t t0 = TIMER_E;
+    if (!np_accent && theme_accent != ACCENT_ALBUM) return;
+    ok = cover_pick(p, stride, w, h, c);
+    if (ok == was && (!ok || (c[0] == cover_rgb[0] && c[1] == cover_rgb[1] && c[2] == cover_rgb[2]))) return;
+    cover_ok = ok;
+    if (ok) { cover_rgb[0] = c[0]; cover_rgb[1] = c[1]; cover_rgb[2] = c[2]; }
+    if (theme_style) np_bitmaps(ok ? cover_rgb : 0, 0);
+    if (theme_accent == ACCENT_ALBUM) album_due = (TIMER_E + 1500000) | 1;   /* the cover stays 1.5 s first */
+    log_s("   theme: cover accent "); if (ok) log_x(c[0] << 16 | c[1] << 8 | c[2], 6); else log_s("none (grey)");
+    log_s(" ("); log_d((int)(TIMER_E - t0)); log_s(" us)\n");
+}
+/* Album: the whole theme follows, from a render pass once the cover has settled (settings.c) */
+int theme_album_due(void)
+{
+    if (!album_due || (int32_t)(TIMER_E - album_due) < 0) return 0;
+    album_due = 0;
+    if (theme_accent != ACCENT_ALBUM || (album_ok == cover_ok && (!cover_ok ||
+        (album_rgb[0] == cover_rgb[0] && album_rgb[1] == cover_rgb[1] && album_rgb[2] == cover_rgb[2])))) return 0;
+    return 1;
 }
 
 /* Modern style Now Playing layout, patched in Apple's own layout resources before the screens are
@@ -1164,7 +1510,11 @@ static const struct { uint32_t type, id, off, old, now; } np_layout[] = {
     { T_VIEW, 0x0dad088e, 0x2d4, 68, 64 },                /* title, artist, album: top */
     { T_VIEW, 0x0dad088e, 0x368, 89, 88 },
     { T_VIEW, 0x0dad088e, 0x3fc, 107, 109 },
-    { T_VLYT, 0x0dad089a, 0x0f4, 107, 109 }
+    { T_VLYT, 0x0dad089a, 0x0f4, 107, 109 },
+    /* Stopwatch_Template: the running time and the laps 14 px left, so SF's wider digits fit (a
+       smaller font here broke every size-130 font, the Screen Lock digits among them) */
+    { T_VIEW, 0x0dad0cdb, 0x10c, 165, 151 }, { T_VIEW, 0x0dad0cdb, 0x234, 173, 159 },
+    { T_VIEW, 0x0dad0cdb, 0x35c, 173, 159 }, { T_VIEW, 0x0dad0cdb, 0x484, 173, 159 }
 };
 static void modern_np_layout(int modern)
 {
@@ -1216,6 +1566,7 @@ static void coverflow_style(int mode, int modern)
         if (!src || size < 4) continue;
         v = rd32(src);
         if (mode) v = (v & 0xff000000) | back[i].dark;
+        if (modern && i == 2) v = (v & 0xff000000) | (mode ? back[0].dark : 0xffffff);   /* Modern: no side rules below a short list */
         rsrc_write(T_COLR, back[i].id, &v, 4);
     }
 }
@@ -1226,9 +1577,16 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     uint32_t i, size, v;
     int bad = 0, done = 0;
     uint8_t rgb[3];
-    uint32_t t0 = TIMER_E;
-    if (accent < 0 || accent >= NACCENT) accent = 0;
-    acc = accents[accent];
+    uint32_t t0 = TIMER_E, akey;
+    if ((from_idx = applied_accent) >= 0) memcpy(from_rgb, acc_rgb(applied_accent), 3);   /* for theme_walk_accent */
+    if (accent == ACCENT_ALBUM) {                       /* the cover's colour, or the fallback as itself */
+        album_ok = cover_ok;
+        if (album_ok) { album_rgb[0] = cover_rgb[0]; album_rgb[1] = cover_rgb[1]; album_rgb[2] = cover_rgb[2]; album_serial++; }
+    }
+    if (accent < 0 || accent > ACCENT_ALBUM) accent = 0;
+    if (accent == ACCENT_ALBUM && !album_ok) accent = theme_album_base & 7;
+    acc = acc_rgb(accent);
+    akey = accent == ACCENT_ALBUM ? 8 + album_serial % 240 : (uint32_t)accent;
     theme_gen++;
     /* the palette first: Modern flattens bars and pages to theme_pal_white while the bitmaps are
        themed. Computed after them, the first apply flattened them to the previous (white) value,
@@ -1240,18 +1598,30 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     else { classic_bars(); modern_np_layout(0); }
     for (i = 0; i < NLIST; i++) {
         int cls = i < sizeof theme_bmap_chrome / 4 ? 0 : i < sizeof theme_bmap_chrome / 4 + sizeof theme_bmap_bg / 4 ? 1 : 2;
-        uint32_t id = list_id(i), key = 0x80000000u | (uint32_t)mode << 16 | (uint32_t)accent << 8 | (uint32_t)theme_style;
+        uint32_t id = list_id(i), key = 0x80000000u | (uint32_t)mode << 16 | akey << 8 | (uint32_t)theme_style;
         const uint8_t *src;
         uint8_t *d = 0;
         if (theme_style && sf_is_accent(id)) continue;     /* Modern: sf_apply keeps these (accent images) */
-        /* the second pass at UI init and repeated applies leave a bitmap that still holds these pixels */
-        if (applied_key[i] == key && applied_sum[i] == bmap_sum(id)) { done++; continue; }
-        if (!(src = bmap_source(id, &size))) { bad++; continue; }
+        /* the second pass at UI init and repeated applies leave a bitmap that still holds these pixels;
+           one the accent never touched keeps them through an accent change */
+        if ((applied_key[i] == key || (acc_dep[i] == 1 && (applied_key[i] ^ key) < 0x10000u && !((applied_key[i] ^ key) & 0xff)))
+            && applied_sum[i] == bmap_sum(id)) { applied_key[i] = key; done++; continue; }
+        if (theme_no_disk && !acc_src[i] && is_written(id)) { done++; continue; }   /* battery.c's two: it redraws them */
+        if (!(src = acc_src[i] ? cached_source(i, id, &size) : bmap_source(id, &size))) { bad++; continue; }
+        px_acc = 0;
         if (mode || accent || cls == 2 || theme_style) d = bmap_themed(src, size, cls, acc, mode, id);
+        acc_dep[i] = d ? 1 + px_acc : 0;
+        if (px_acc) cache_source(i, src, size);
         if ((d || is_written(id)) && rsrc_write(T_BMAP, id, d ? d : src, size)) { bad++; if (d) os_free(d); continue; }
         if (d) { os_free(d); mark_written(id); } else forget(id);
         applied_key[i] = key; applied_sum[i] = bmap_sum(id);
         done++;
+    }
+    if (theme_style) {
+        uint32_t key = 0x80000000u | (uint32_t)mode << 16 | akey << 8 | (uint32_t)theme_style;
+        modern_late(mode, acc, key);
+        /* the lists' bitmaps modern_late filled keep their sums, so the next apply of this theme skips them */
+        for (i = 0; i < NLIST; i++) if (applied_key[i] == key) applied_sum[i] = bmap_sum(list_id(i));
     }
     sources_close();
     for (i = 0; i < sizeof theme_colr / 4; i++) {
@@ -1268,6 +1638,23 @@ int theme_apply(int mode, int accent, int rebuild_ui)
             v = (v & 0xff000000) | (uint32_t)rgb[0] << 16 | rgb[1] << 8 | rgb[2];
         }
         if (rsrc_write(T_COLR, theme_colr[i], &v, 4)) bad++; else done++;
+    }
+    /* Modern's own COLRs, {id, Dark, Light}; Classic puts back the ones from the sixth on (the
+       first five are in theme_colr, which the loop above wrote) */
+    static const uint32_t mcolr[8][3] = {
+        { 0x0dad0c80, 0xffffff, 0x000000 },              /* Stopwatch time, then laps newest first: iOS's grey ramp */
+        { 0x0dad0c81, 0xaeaeb2, 0x48484a }, { 0x0dad0c82, 0x8e8e93, 0x8e8e93 }, { 0x0dad0c83, 0x636366, 0xaeaeb2 },
+        { 0x0dad0b40, 0xeeeeee, 0x3a3a3c },              /* Settings_Color_Gray: the EQ preview's bars, dark on the Light page */
+        { 0x0dad061a, 0x1c1c1e, 0xffffff },              /* Games_Background_Color_Loading: the page */
+        { 0x0dad0374, 0xffffff, 0xd1d1d6 },              /* WorldClock_Map_Color: a faint map in Light */
+        { 0x0dad0373, 0xffffff, 0x000000 },              /* WorldClock_Text_Color: the city rows' text */
+    };
+    for (i = theme_style ? 0 : 5; i < 8; i++) {
+        const uint8_t *src = orig_of(T_COLR, mcolr[i][0], &size);
+        if (!src || size < 4) { bad++; continue; }
+        v = rd32(src);
+        if (theme_style) v = (v & 0xff000000) | mcolr[i][mode ? 1 : 2];
+        if (rsrc_write(T_COLR, mcolr[i][0], &v, 4)) bad++; else done++;
     }
     /* Modern: the preview images (white masks) are tinted with the accent: main menu and
        empty-library previews (PreviewArea_ForegroundImageColor), Settings (Settings_Icon_Color).
@@ -1286,8 +1673,12 @@ int theme_apply(int mode, int accent, int rebuild_ui)
     }
     coverflow_style(mode, theme_style);
     theme_named(mode, accent, acc);
-    { void battery_redraw(void); battery_redraw(); }   /* its two images just got their stock pixels back */
+    if (theme_style) {                                  /* Now Playing keeps the cover's colour */
+        np_bitmaps(0, 1);
+        if ((np_accent || theme_accent == ACCENT_ALBUM) && cover_ok) np_bitmaps(cover_rgb, 0);
+    }
     applied_mode = mode; applied_accent = accent;
+    { void battery_redraw(void); battery_redraw(); }   /* its two images just got their stock pixels back; inked for this mode */
     log_s("   theme: "); log_s(mode ? "dark, accent " : "light"); if (mode) log_s(accent_names[accent]);
     log_s(", resources patched "); log_d(done); log_s(", failed "); log_d(bad); log_s(" ("); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms)\n");
     (void)rebuild_ui;
@@ -1297,9 +1688,8 @@ int theme_apply(int mode, int accent, int rebuild_ui)
 /* the current accent as RGB (the boot progress bar) */
 void theme_accent_rgb(uint8_t out[3])
 {
-    extern int theme_accent;
-    int a = theme_accent >= 0 && theme_accent < NACCENT ? theme_accent : 0;
-    out[0] = accents[a][0]; out[1] = accents[a][1]; out[2] = accents[a][2];
+    const uint8_t *a = acc_rgb(theme_accent);
+    out[0] = a[0]; out[1] = a[1]; out[2] = a[2];
 }
 
 /* Modern style: Now Playing's cover is drawn turned 171 degrees about its vertical axis (180,

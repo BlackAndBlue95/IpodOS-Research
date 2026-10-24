@@ -38,8 +38,10 @@ extern char sync_summary[];          /* ossync.c: the last sync's one-line resul
 volatile uint32_t theme_boot[4] __attribute__((aligned(16))) = { THEME_MAGIC, 0, 0, 0 };   /* magic, mode, accent, city + 1 (initialised data inside E) */
 
 static const char *const mode_names[3] = { "Light", "Dark", "Automatic" };
-static const char *const accent_labels[8] = { "Blue", "Purple", "Pink", "Red", "Orange", "Yellow", "Green", "Graphite" };
-static const char *const accent_keys[8] = { "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite" };
+static const char *const accent_labels[9] = { "Blue", "Purple", "Pink", "Red", "Orange", "Yellow", "Green", "Graphite", "Album" };
+static const char *const accent_keys[9] = { "blue", "purple", "pink", "red", "orange", "yellow", "green", "graphite", "album" };
+#define ACCENT_ALBUM 8                 /* theme.c: the playing cover's colour */
+extern int theme_album_base;           /* Album's colour for grey covers: the last one chosen */
 int settings_mode = 0;        /* 0 light, 1 dark, 2 auto: the saved choice */
 int settings_city = -1;       /* index into cities; -1 = from the iPod's time zone */
 static int boot_mode = -1;    /* the choice the UI was built with (-1: early hook did not run) */
@@ -77,6 +79,7 @@ static void settings_save(void)
     for (p = "accent="; *p; p++) buf[n++] = *p;
     for (p = accent_keys[theme_accent]; *p; p++) buf[n++] = *p;
     buf[n++] = '\n';
+    if (theme_accent == ACCENT_ALBUM) n = put_line(buf, n, "album_fallback=", accent_keys[theme_album_base & 7]);
     for (p = settings_style ? "style=modern\n" : "style=classic\n"; *p; p++) buf[n++] = *p;
     if (settings_city >= 0) {
         for (p = "city="; *p; p++) buf[n++] = *p;
@@ -108,7 +111,10 @@ static int settings_load(void)
         else if (prefix(buf + i, "style=modern")) settings_style = 1;
         else if (prefix(buf + i, "style=classic")) settings_style = 0;
         else if (prefix(buf + i, "accent=")) {
-            for (k = 0; k < 8; k++) if (prefix(buf + i + 7, accent_keys[k])) theme_accent = k;
+            for (k = 0; k < 9; k++) if (prefix(buf + i + 7, accent_keys[k])) theme_accent = k;
+            if (theme_accent < ACCENT_ALBUM) theme_album_base = theme_accent;
+        } else if (prefix(buf + i, "album_fallback=")) {
+            for (k = 0; k < 8; k++) if (prefix(buf + i + 15, accent_keys[k])) theme_album_base = k;
         } else if (prefix(buf + i, "loudness=")) hear_loud = prefix(buf + i + 9, "on");
         else if (prefix(buf + i, "crossfeed=")) hear_xfeed = prefix(buf + i + 10, "on");
         else if (prefix(buf + i, "fatigue=")) {
@@ -196,7 +202,7 @@ void settings_early(void)
     if (!file_loaded) {
         if (theme_boot[0] != THEME_MAGIC) return;
         settings_mode = theme_boot[1] <= 2 ? (int)theme_boot[1] : 0;
-        theme_accent = theme_boot[2] < 8 ? (int)theme_boot[2] : 0;
+        theme_accent = theme_boot[2] <= ACCENT_ALBUM ? (int)theme_boot[2] : 0;
         settings_city = theme_boot[3] ? (int)theme_boot[3] - 1 : -1;
     }
     boot_mode = settings_mode;
@@ -304,6 +310,24 @@ static void switch_live(int mode)
     { extern int theme_walk_pending; theme_walk_pending = 1; }   /* ... and Now Playing when it next appears */
 }
 
+/* Album accent: the playing cover changed colour and has stayed 1.5 s (theme_album_due, from the UI
+   render pass). An accent-only switch: no reload walk, no file writes; each step is timed in the log. */
+void settings_album(void)
+{
+    uint32_t t0 = TIMER_E, t1, t2;
+    extern int theme_no_disk;
+    if (applied < 0) return;
+    theme_no_disk = 1;
+    theme_apply(applied, theme_accent, 0);
+    theme_no_disk = 0;
+    t1 = TIMER_E;
+    { void theme_walk_accent(void); theme_walk_accent(); }
+    t2 = TIMER_E;
+    { void theme_redraw(int layers); theme_redraw(0); }  /* no hidden layers, no later walk: no burst of art requests */
+    log_s("   settings: album accent re-theme "); log_d((int)((TIMER_E - t0) / 1000)); log_s(" ms (apply "); log_d((int)((t1 - t0) / 1000));
+    log_s(", walk "); log_d((int)((t2 - t1) / 1000)); log_s(", redraw "); log_d((int)((TIMER_E - t2) / 1000)); log_s(")\n");
+}
+
 E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
 {
     CRUMB();
@@ -334,7 +358,8 @@ E_ENTRY int e_settings_action(void *self, const char *action, uint32_t arg)
             return 1;
         }
         if (g == 0 && k == 3) { settings_style ^= 1; theme_style = settings_style; }   /* "Modern style" (its font follows at the next start) */
-        else if (g == 0) settings_mode = k; else theme_accent = k;
+        else if (g == 0) settings_mode = k;
+        else { theme_accent = k; if (k < ACCENT_ALBUM) theme_album_base = k; }
         log_s("   switch: action "); log_s(action); log_c('\n'); log_flush();
         settings_save();
         log_s("   switch: saved\n"); log_flush();

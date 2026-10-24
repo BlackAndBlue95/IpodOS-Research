@@ -35,6 +35,7 @@ ap.add_argument('--fast-prims', action='store_true', help='direct paths for dyna
 ap.add_argument('--ft-raster', action='store_true', help="FreeType 2.14's anti-aliased rasterizer for the smooth renderers (ft/ftgrays_e.c)")
 ap.add_argument('--kern', action='store_true', help='pair kerning and fractional advances for fonts with a kern table (kern.c)')
 ap.add_argument('--dither', action='store_true', help='blue-noise dithered RGB565 for generated gradients and decoded covers (dither565.h)')
+ap.add_argument('--np-accent', action='store_true', help="Now Playing's accent elements take a colour picked from the cover (theme.c theme_cover)")
 ap.add_argument('--prof',action='store_true', help='region E built with PROF=1: reserve room for the profiler (it hooks at run time)')
 ap.add_argument('--governor-floor', action='store_true',
                 help='with the backlight on, the OS governor floors at L1 (108 MHz) instead of pinning L0')
@@ -171,8 +172,10 @@ if a.hooks == 'all':
     # theme_white, fills and frames -> theme_pal_*. KEEP lists the literals left on the OS globals.
     GREYS = {0x089cc8c0: 'theme_pal_white', 0x089cc8c4: 'theme_pal_aa', 0x089cc8c8: 'theme_pal_7f',
              0x089cc8cc: 'theme_pal_55', 0x089cc8d0: 'theme_pal_black'}
+    # TEXT_BLACK's last two hold the white global: the black option bars' labels (HUD buttons) and the
+    # Search keyboard's letters (its constructor 0x08203674), the page's text on their theme-coloured wells
     TEXT_BLACK = (0x08092ca0, 0x08285a14, 0x08193d88, 0x080e27f0, 0x081383d8, 0x08082b94, 0x08085898,
-                  0x0827b104, 0x08196608, 0x081515dc)
+                  0x0827b104, 0x08196608, 0x081515dc, 0x081df44c, 0x08203794)
     TEXT_WHITE = (0x08285a10, 0x081a8690, 0x08092c9c, 0x080e27f4, 0x081383e8, 0x08193d84)   # 0x08082b8c is a SetBg fill under text: theme_pal_white
     KEEP = (0x0813dde0, 0x0813ddec, 0x0811f184, 0x0826587c, 0x08265b98, 0x082a31cc, 0x082a5d88, 0x08286914,
         0x081a7e8c,   # marquee scroll bitmap fill: the OS white, the mask's paper level
@@ -243,6 +246,10 @@ if a.hooks == 'all':
         for at in KERN_RUNS: retarget(at, 0x0809334c, sym['e_kern_run'])
     if a.dither:      # region E's own RGB565 output (Now Playing background, covers, re-themed bitmaps) dithered
         o = HDR + E_LOAD + sym['dither565'] - E_BASE
+        assert struct.unpack_from('<I', img, o)[0] == 0
+        struct.pack_into('<I', img, o, 1)
+    if a.np_accent:   # Now Playing's title, progress fill and option pill take a colour picked from the cover (theme.c)
+        o = HDR + E_LOAD + sym['np_accent'] - E_BASE
         assert struct.unpack_from('<I', img, o)[0] == 0
         struct.pack_into('<I', img, o, 1)
     # required on a 256 GB card (15.6M clusters): stock, the free count is a full FAT scan and a low
