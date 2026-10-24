@@ -28,23 +28,23 @@ A boot, then the main menu's album art, an album into Now Playing, the Now Playi
 playing album's cover, Accent Colour > Album taking the cover's colour live, and a live switch to
 Light:
 
-![Boot, menus with album art, Now Playing, the Album accent and a live theme switch](docs/screenshots/tour.webp)
+![Boot, menus with album art, Now Playing, the Album accent and a live theme switch](docs/screenshots/tour-r124.webp)
 
 The Modern style: flat bars, large accent icons, SF text, covers from the library panning in the
 preview pane. Dark in four of the eight accent colours, Album (the playing cover's colour), and
 Light (bottom right):
 
-![The main menu in four accent colours, Album and Light](docs/screenshots/accents.png)
+![The main menu in four accent colours, Album and Light](docs/screenshots/accents-r124.png)
 
 Around the menus: the Music menu, Albums and Songs with their covers, Settings > Hearing, the main
 menu while a song plays, a boot stage, and Light with the Theme choices:
 
-![Music, Albums, Songs, Hearing, the Now Playing row, the boot status, Light and Theme](docs/screenshots/tour.png)
+![Music, Albums, Songs, Hearing, the Now Playing row, the boot status, Light and Theme](docs/screenshots/tour-r124.png)
 
 Now Playing: the album cover on a blurred copy of itself, a thin progress bar that becomes a
 scrubber, the title and bar in a colour picked from the cover, and Light:
 
-![Now Playing](docs/screenshots/now-playing.png)
+![Now Playing](docs/screenshots/now-playing-r124.png)
 
 Single screens at twice the iPod's resolution are in [docs/screenshots](docs/screenshots). They
 are taken in the QEMU model (tools/qemu), based on
