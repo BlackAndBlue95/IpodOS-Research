@@ -21,7 +21,15 @@ copied in from `EF-fonts-rsrc.img` (Z-rb's own firmware partition has no Modern 
   battery ink. That covers #1's title bars and #17's About header.
 - The Light Now Playing background (#5 needs a fresh look against it).
 
-The Screen Lock combination slider (#11) is still glossy, which is known.
+**Status at R124 (on the device, emulator-checked in both themes):**
+- Done: #1 (with the video controls' bar), #3 dots, #4, #5, #6, #7, #8, #9, #10, #11 (the lock
+  tumbler too), #12, #13, #14, #15 (HUDs light in Light), #16, #18, #19, #23, #24.
+- Changed, not seen on screen: #3 set stars (no rated song in the test library), #17 capacity
+  colours, #20 (games never leave Loading in the emulator), #22 red low levels, the wheel's
+  letter overlay (`System_QuickScroll_Image`).
+- Kept on purpose: Apple's drop shadow at the menu pane (#2); the slate pane is gone.
+- Open: #21 (Notes has no empty state), #22's charging bolt (check on the device), the status-bar
+  clock jumping four hours.
 
 **Effort key:**
 - **R**: colour or resource retheme in `runtime/theme*.c`
