@@ -1,5 +1,6 @@
 // render.swift LIST OUTDIR: renders Apple SF Symbols (or system-font text) as 8-bit alpha masks.
-// LIST lines: name W H bx by bw bh weight rot what   (what = SF symbol name, or "text:STRING"; rot degrees clockwise)
+// LIST lines: name W H bx by bw bh weight rot what   (what = SF symbol name, "text:STRING" (monospaced
+// digits) or "ui:STRING" (proportional system font, CJK by fallback); rot degrees clockwise)
 // The glyph is fitted into the box (bx,by,bw,bh) keeping its aspect, centred. Output OUTDIR/name.a (W*H bytes).
 import AppKit
 let args = CommandLine.arguments
@@ -13,9 +14,10 @@ for l in lines {
     let box = NSRect(x: Double(f[3])!, y: Double(f[4])!, width: Double(f[5])!, height: Double(f[6])!)
     let wt = weights[f[7]] ?? .regular
     var img: NSImage? = nil
-    if f[9].hasPrefix("text:") {
-        let s = String(f[9].dropFirst(5)) as NSString
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 400, weight: wt)
+    if f[9].hasPrefix("text:") || f[9].hasPrefix("ui:") {
+        let ui = f[9].hasPrefix("ui:")
+        let s = String(f[9].dropFirst(ui ? 3 : 5)) as NSString
+        let font = ui ? NSFont.systemFont(ofSize: 400, weight: wt) : NSFont.monospacedDigitSystemFont(ofSize: 400, weight: wt)
         let attr: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
         // tight glyph bounds
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: s as String, attributes: attr))

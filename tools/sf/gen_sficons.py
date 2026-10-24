@@ -46,18 +46,23 @@ MAP = [
     (r'NowPlaying_(Classic_|Large_)?Shuffle_Image', G, 'shuffle', 'semibold'),
     (r'NowPlaying_(Classic_)?Repeat_Image', G, 'repeat', 'semibold'),
     (r'NowPlaying_(Classic_)?Repeat_Once_Image', G, 'repeat.1', 'semibold'),
-    (r'NowPlaying_Genius_Icon|Media_Genius_(Normal|Selected)_Image|Genius_Slider_Icon_Image|Playlist_(Saved_)?Genius_Icon(_Hi)?', G, 'atom', 'semibold'),
-    (r'Media_Genius_Large_Image', G, 'atom', 'regular'),
+    (r'NowPlaying_Genius_Icon|Genius_Slider_Icon_Image', G, 'atom', 'semibold'),
+    # Genius and playlist rows: accent images (ARGB or palette, same size); the highlighted ones are white
+    (r'Media_Genius_Large_Image', G, 'atom', 'regular', 'accs'),
+    (r'Media_Genius_Normal_Image|Playlist_Genius_Icon', G, 'atom', 'semibold', 'accs'),
+    (r'Media_Genius_Selected_Image|Playlist_Genius_Icon_Hi', G, 'atom', 'semibold', (255, 255, 255)),
+    (r'Playlist_Saved_Genius_Icon', G, 'sparkles', 'semibold', 'accs'),
     (r'Media_Genius_Refresh(_Hi)?_Image', G, 'arrow.clockwise', 'semibold'),
     (r'NowPlaying_Paused_Image|TVOut_Pause_Image|VoiceMemosImage_Pause', None, 'pause.fill', 'semibold'),
     (r'NowPlaying_Idle_Lock_Image', G, 'lock.fill', 'semibold'),
     (r'NowPlaying_Idle_Radio_Image|Radio_Signal_Indicator_(Light|Dark)_Image', G, 'dot.radiowaves.left.and.right', 'semibold'),
     # lists
     (r'Media_NowPlayingIcon_(Black|White)_Image', G, 'speaker.wave.2.fill', 'semibold'),
-    (r'Media_NowPlayingIcon_Playlist_(Black|White)_Image|Playlist_Regular_Icon', G, 'music.note.list', 'semibold'),
+    (r'Media_NowPlayingIcon_Playlist_(Black|White)_Image', G, 'music.note.list', 'semibold'),
+    (r'Playlist_Regular_Icon', G, 'music.note.list', 'semibold', 'accs'),
     (r'Media_VideoStatusIcon(_White)?_Image|Podcasts_(new_item_)?video(_white)?(_solo)?_Image', G, 'tv', 'semibold'),
-    (r'Playlist_Folder_Icon', G, 'folder.fill', 'regular'),
-    (r'Playlist_Smart_Icon', G, 'gearshape.fill', 'regular'),
+    (r'Playlist_Folder_Icon', G, 'folder.fill', 'regular', 'accs'),
+    (r'Playlist_Smart_Icon', G, 'music.note.list+gearshape.fill', 'semibold', 'accs'),   # base + badge
     (r'Settings_MainMenu_Checkmark(Black|White)_Image', G, 'checkmark', 'bold'),
     (r'System_Submenu_Image', G, 'chevron.right', 'semibold'),
     (r'System_Overlay_BrightnessLess_Image', G, 'sun.min.fill', 'semibold'),
@@ -86,6 +91,9 @@ MAP = [
     (r'Settings_SoundCheckOff_Image', G, 'speaker.fill', 'regular'),
     (r'Settings_SoundCheckOn_Image', G, 'waveform', 'regular'),
     (r'Settings_VolumeLimit_Image', G, 'slider.horizontal.3', 'regular'),
+    # Settings > EQ previews: 4-bit alpha bars, redrawn flat at the stock heights; Language: the greetings
+    (r'Settings_EQ_\w+_Image', 'eq', None, None),
+    (r'Settings_Language_Image', 'lang', None, None),
     (r'Settings_Backlight_off_Image', G, 'circle', 'regular'),
     (r'Settings_Backlight_on_Image', G, 'circle.fill', 'regular'),
     (r'Settings_AppleLogo(Preview)?_Image', G, 'apple.logo', 'regular'),
@@ -177,7 +185,16 @@ for part in CHG_SLICE:
     SPECIAL['ChargingMode_Image_' + part] = ('chg', part)
 
 ACCENT = set()                                   # images that take the accent colour at boot
+SAME = set()                                     # accent images that keep their own format and size (palette or ARGB)
 RECODE = set()                                   # alpha masks stored as 8-bit palette images instead
+# Settings > Language: the stock boxes (ink, x y w h) and weights; the bright one is alpha 1, the others the
+# stock's dim 102/255. Willkommen is clipped at the right edge in the stock, so its box moves left to fit.
+LANG = [
+    ('Bienvenue', (8, 31, 105, 17), 'regular', 0.4),
+    ('欢迎', (90, 60, 69, 39), 'regular', 0.4),
+    ('Welcome', (31, 112, 105, 19), 'bold', 1.0),
+    ('Willkommen', (30, 171, 125, 17), 'regular', 0.4),
+]
 TILE_FILL, TILE_GLYPH = (229, 229, 234), (142, 142, 147)        # iOS systemGray6-ish / systemGray
 DARK_TILE = (0, 0, 0, 150)
 
@@ -240,6 +257,30 @@ def rrect(x0, y0, w, h, r):
         cx = min(max(x, x0 + r), x0 + w - r); cy = min(max(y, y0 + r), y0 + h - r)
         return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
     return f
+
+def topround(x0, y0, x1, y1, r):
+    """a box [x0, x1] x [y0, y1] with its two top corners rounded by r (the bottom stays square)"""
+    def f(x, y):
+        if x < x0 or y < y0 or x > x1 or y > y1: return False
+        if y < y0 + r:
+            cx = min(max(x, x0 + r), x1 - r)
+            return (x - cx) ** 2 + (y - y0 - r) ** 2 <= r * r
+        return True
+    return f
+
+def eq_bars(rows, w, h):
+    """(x0, x1, top, bottom) of each EQ bar: a run of columns with ink; the top is the first row of ink in
+    the run's centre column (the stock's edges are whole pixels), the bottom is the run's last row + 1"""
+    cover = [max(rows[y][4 * x + 3] for y in range(h)) for x in range(w)]
+    bars, x = [], 0
+    while x < w:
+        if cover[x] < 128: x += 1; continue
+        s = x
+        while x < w and cover[x] >= 128: x += 1
+        c = (s + x - 1) // 2
+        ys = [y for y in range(h) if rows[y][4 * c + 3] >= 128]
+        bars.append((s, x, min(ys), max(ys) + 1))
+    return bars
 
 # ---- one image ----
 def build(name, pass2):
@@ -327,7 +368,9 @@ def build(name, pass2):
         if not spec: return None
         style, sym, weight = spec[1], spec[2], spec[3]
         if len(spec) > 4: col = spec[4]
-        if col == 'acc': col = (0, 122, 255); ACCENT.add(pid)     # recoloured to the accent at boot
+        if col in ('acc', 'accs'):                  # recoloured to the accent at boot ('accs': same format and size)
+            if col == 'accs': SAME.add(pid)
+            col = (0, 122, 255); ACCENT.add(pid)
         if name.startswith('ChargingMode_Image_Toggle'):
             RECODE.add(pid)                         # alpha masks the OS tints black (ChargingMode_Toggle_Color)
         big = re.fullmatch(r'Settings_\w+_Image', name) and (w, h) in ((78, 121), (78, 122))
@@ -363,6 +406,15 @@ def build(name, pass2):
             layers.append((ss_mask(w, h, tick), ink, 1.0))
         elif style == 'P':
             pass                                    # the Settings base panel: empty
+        elif style == 'eq':
+            # each bar: the stock's column run and its top (the centre column's first row of ink), flat with
+            # rounded top corners, at full alpha; the stock gloss band is dropped
+            for x0, x1, top, bot in eq_bars(rows, w, h):
+                layers.append((ss_mask(w, h, topround(x0, top, x1, bot, 3)), (255, 255, 255), 1.0))
+        elif style == 'lang':
+            for i, (text, bx, wt, a) in enumerate(LANG):
+                k = sf('lang_%d' % i, w, h, bx, wt, 'ui:' + text)
+                if pass2: layers.append((load(k, w, h), (255, 255, 255), a))
         elif style == T and fmt != 0x565:           # art placeholders: the symbol in the accent, no tile
             x0, y0, bw, bh = ink_box(rows, w, h, 40)
             k = sf(name, w, h, (x0 + bw * 0.15, y0 + bh * 0.15, bw * 0.7, bh * 0.7), weight, sym)
@@ -379,7 +431,14 @@ def build(name, pass2):
             k = sf(name, w, h, (x0 + bw * 0.3, y0 + bh * 0.3, bw * 0.4, bh * 0.4), weight, sym)
             if pass2: layers.append((load(k, w, h), (255, 255, 255), 1.0))
         else:
-            k = sf(name, w, h, box, weight, sym)
+            base, _, badge = sym.partition('+')
+            if badge:                               # a badge over the lower right of the base symbol
+                x0, y0, bw, bh = box
+                k = sf(name, w, h, (x0, y0, bw * 0.7, bh * 0.7), weight, base)
+                kb = sf(name + '_badge', w, h, (x0 + bw * 0.45, y0 + bh * 0.45, bw * 0.55, bh * 0.55), weight, badge)
+                if pass2: layers.append((load(kb, w, h), col, 1.0))
+            else:
+                k = sf(name, w, h, box, weight, sym)
             if pass2: layers.append((load(k, w, h), col, 1.0))
     if not pass2: return None
     if pid in ACCENT:                               # accent symbols stand alone: no opaque tile behind them
@@ -419,7 +478,7 @@ def recode(w, h, rgba):
     return struct.pack('<HHHHIIIII', 0x64, 0xffff, stride, 8, 0, 0, h, w, len(data)) + data
 
 def encode(pid, fmt, w, h, stride, rgba, orig_rows):
-    if pid in RECODE or pid in ACCENT: return recode(w, h, rgba)    # accent images: their own one-colour palette
+    if pid in RECODE or (pid in ACCENT and pid not in SAME): return recode(w, h, rgba)    # accent images: their own one-colour palette
     off, size = bm_index[pid]
     blob = bytearray(pkg.D[DATA + off - BASE:DATA + off - BASE + size])
     p = 0x1c
